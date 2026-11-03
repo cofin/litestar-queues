@@ -6,12 +6,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from inspect import isawaitable, iscoroutinefunction
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 from uuid import uuid4
-
-from typing_extensions import Self
 
 from litestar_queues._correlation import (
     bind_correlation_id,
@@ -73,7 +71,7 @@ def _utc_now() -> "datetime":
     Returns:
         The current time in UTC.
     """
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 _LOG_LEVELS = {
@@ -802,10 +800,7 @@ class QueueService:
         if max_interruptions is not None and interruption_count(record) >= max_interruptions:
             return await self._fail_interrupted_task(record, worker_id=worker_id)
         updated = await self.get_queue_backend().interrupt_task(
-            record.id,
-            expected_retry_count=record.retry_count,
-            worker_id=worker_id,
-            queued_at=datetime.now(timezone.utc),
+            record.id, expected_retry_count=record.retry_count, worker_id=worker_id, queued_at=datetime.now(UTC)
         )
         if updated is None:
             return None
@@ -1026,7 +1021,7 @@ class QueueService:
         telemetry: "_ExecutionObservability",
     ) -> "QueuedTaskRecord":
         error_message = self._error_message(exc, record)
-        queued_at = datetime.now(timezone.utc)
+        queued_at = datetime.now(UTC)
         retry_delay = _retry_delay(record)
         retry_at = queued_at + timedelta(seconds=retry_delay) if retry_delay > 0 else None
         updated = await self.get_queue_backend().fail_task(
@@ -1830,7 +1825,7 @@ def _resolve_schedule_and_expiration(
     effective_run_after = _coerce_timedelta(run_after) if run_after is not None else task_obj.run_after
     effective_scheduled_at = scheduled_at
     if effective_scheduled_at is None and effective_run_after is not None:
-        effective_scheduled_at = datetime.now(timezone.utc) + effective_run_after
+        effective_scheduled_at = datetime.now(UTC) + effective_run_after
     if effective_scheduled_at is not None:
         effective_scheduled_at = _ensure_utc(effective_scheduled_at)
     return effective_scheduled_at, _resolve_expires_at(
@@ -1856,7 +1851,7 @@ def _resolve_expires_at(
     if effective_expires_in < timedelta():
         msg = "expires_in must not be negative."
         raise ValueError(msg)
-    return (scheduled_at or datetime.now(timezone.utc)) + effective_expires_in
+    return (scheduled_at or datetime.now(UTC)) + effective_expires_in
 
 
 def _expiration_enqueue_kwargs(expires_at: "datetime | None") -> "dict[str, datetime]":

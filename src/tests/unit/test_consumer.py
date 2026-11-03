@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+from datetime import UTC
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
@@ -706,7 +707,7 @@ async def test_consumer_runtime_manages_dependency_provider() -> "None":
 
 
 async def test_consume_one_recovers_and_executes_stale_running_record() -> "None":
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from litestar_queues import QueueConfig, QueueService, task
     from litestar_queues.consumer import TaskExitCode, consume_one
@@ -732,7 +733,7 @@ async def test_consume_one_recovers_and_executes_stale_running_record() -> "None
         assert claimed is not None
         stored = await queue_backend.get_task(result.id)
         assert stored is not None
-        stored.heartbeat_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+        stored.heartbeat_at = datetime.now(UTC) - timedelta(seconds=60)
 
         exit_code = await consume_one(service, result.id)
         await result.refresh()
@@ -744,7 +745,7 @@ async def test_consume_one_recovers_and_executes_stale_running_record() -> "None
 
 
 async def test_consume_one_recovers_and_fails_stale_running_record_without_retries() -> "None":
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from litestar_queues import QueueConfig, QueueService, task
     from litestar_queues.consumer import TaskExitCode, consume_one
@@ -767,7 +768,7 @@ async def test_consume_one_recovers_and_fails_stale_running_record_without_retri
         assert claimed is not None
         stored = await queue_backend.get_task(result.id)
         assert stored is not None
-        stored.heartbeat_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+        stored.heartbeat_at = datetime.now(UTC) - timedelta(seconds=60)
 
         exit_code = await consume_one(service, result.id)
         await result.refresh()

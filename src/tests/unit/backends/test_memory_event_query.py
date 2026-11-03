@@ -1,6 +1,6 @@
 """Memory event-log query, summary, and filtered retention."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -10,7 +10,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 
 pytestmark = pytest.mark.anyio
 
-BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _event(event_id: str, *, offset: int, **kwargs: object) -> QueueEvent:

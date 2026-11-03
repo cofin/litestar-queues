@@ -3,7 +3,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, nullcontext, suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from inspect import isawaitable, iscoroutinefunction
 from typing import TYPE_CHECKING, Any, cast, overload
@@ -3027,7 +3027,7 @@ async def _select_stream(
 
 
 def _utc_now() -> "datetime":
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _rows_affected(result: "Any", *, supports_reliable_rowcount: "bool") -> "int":
@@ -3072,8 +3072,8 @@ def _serialize_datetime(value: "datetime | None") -> "datetime | None":
     if value is None:
         return None
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _deserialize_datetime(value: "Any") -> "datetime | None":
@@ -3083,10 +3083,10 @@ def _deserialize_datetime(value: "Any") -> "datetime | None":
     try:
         parsed = datetime.fromisoformat(value_text)
     except ValueError:
-        parsed = datetime.strptime(value_text.upper(), "%d-%b-%y").replace(tzinfo=timezone.utc)
+        parsed = datetime.strptime(value_text.upper(), "%d-%b-%y").replace(tzinfo=UTC)
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _coerce_status(value: "Any") -> "TaskStatus":

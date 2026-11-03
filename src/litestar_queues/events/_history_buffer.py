@@ -162,7 +162,7 @@ class _HistoryBuffer:
         while True:
             try:
                 await asyncio.shield(self._close_task)
-            except asyncio.CancelledError as exc:  # noqa: PERF203 - repeated cancellation must still await cleanup.
+            except asyncio.CancelledError as exc:
                 if self._close_task.cancelled():
                     raise
                 cancelled = exc
@@ -299,7 +299,7 @@ class _HistoryBuffer:
                 if delay > 0:
                     try:
                         await asyncio.wait_for(self._wake.wait(), timeout=delay)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         pass
                     else:
                         continue

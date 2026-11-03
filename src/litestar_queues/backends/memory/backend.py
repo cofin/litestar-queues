@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from litestar_queues.backends._notification_wait import PendingNativeRead
@@ -901,7 +901,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 await clear()
 
 
-_MIN_DATETIME = datetime(1, 1, 1, tzinfo=timezone.utc)
+_MIN_DATETIME = datetime(1, 1, 1, tzinfo=UTC)
 
 
 def _stale_sort_key(record: "QueuedTaskRecord") -> "tuple[datetime, str]":
@@ -916,7 +916,7 @@ def _stale_sort_key(record: "QueuedTaskRecord") -> "tuple[datetime, str]":
 
 
 def _utc_now() -> "datetime":
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _expire_record(record: "QueuedTaskRecord", completed_at: "datetime") -> "None":

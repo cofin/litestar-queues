@@ -1,6 +1,6 @@
 """Redis event-history dimensions, query, summary, and filtered retention."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.anyio
 
-BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _event(event_id: str, *, offset: int = 0, **kwargs: object) -> QueueEvent:

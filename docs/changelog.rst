@@ -38,6 +38,11 @@ project is pre-1.0, so minor releases may make intentional API breaks.
   or adapter package inspection (`#186 <https://github.com/cofin/litestar-queues/issues/186>`_,
   `#187 <https://github.com/cofin/litestar-queues/pull/187>`_).
 
+**Changed:**
+
+* **Breaking:** Increased the minimum supported Python version from 3.10 to 3.11 (``requires-python = ">=3.11"``),
+  added Python 3.15 support, and removed Python 3.10 compatibility shims (`#187 <https://github.com/cofin/litestar-queues/pull/187>`_).
+
 0.13.0 - 2026-11-03
 ===================
 

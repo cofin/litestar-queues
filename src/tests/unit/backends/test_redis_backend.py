@@ -1,7 +1,7 @@
 import asyncio
 import builtins
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
@@ -151,7 +151,7 @@ async def test_redis_enqueue_many_persists_unkeyed_batch_with_one_pipeline_and_o
 async def test_redis_enqueue_many_future_batch_does_not_publish_notification() -> "None":
     client = _CountingRedisClient()
     backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), worker_wakeups=True))
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     records = await backend.enqueue_many([TaskRequest(task_name="tasks.redis.later", scheduled_at=later)])
 
@@ -263,7 +263,7 @@ async def test_redis_cleanup_terminal_sweeps_orphaned_ids_after_hash_expiry() ->
     client.sets[backend._queue_index_key("default")] = {orphan_id}
     client.hashes[backend._keys_key] = {"dedup-1": orphan_id}
 
-    cutoff = datetime.now(timezone.utc) + timedelta(seconds=10)
+    cutoff = datetime.now(UTC) + timedelta(seconds=10)
     deleted = await backend.cleanup_terminal(cutoff, limit=10)
 
     assert deleted == 1
@@ -278,7 +278,7 @@ async def test_redis_cleanup_terminal_sweeps_orphaned_ids_after_hash_expiry() ->
 async def test_redis_rebuild_maintenance_indexes_populates_terminal_meta() -> "None":
     client = _CountingRedisClient()
     backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), terminal_ttl=300.0))
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     record = QueuedTaskRecord(task_name="tasks.redis.terminal", status="completed", completed_at=now, key="order-42")
     task_id = str(record.id)
     client.hashes[backend._task_key(record.id)] = backend._record_to_mapping(record)
@@ -601,7 +601,7 @@ class _CountingPubSub:
             return await self._message.get()
         try:
             return await asyncio.wait_for(self._message.get(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
 
     def deliver(self) -> "None":

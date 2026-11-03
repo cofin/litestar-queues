@@ -1,11 +1,10 @@
 import asyncio
 import time
-from datetime import datetime, timedelta, timezone, tzinfo
-from typing import TYPE_CHECKING, Any, cast
+from datetime import UTC, datetime, timedelta, tzinfo
+from typing import TYPE_CHECKING, Any, Self, cast
 from uuid import UUID, uuid4
 
 import pytest
-from typing_extensions import Self
 
 from litestar_queues import (
     EventDeliveryConfig,
@@ -47,7 +46,7 @@ async def test_backend_contract_event_pagination_total(
     log = queue_backend.get_event_log(history)
     assert log is not None
     await queue_backend.create_schema()
-    started_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    started_at = datetime(2026, 9, 1, tzinfo=UTC)
     for index in range(6):
         await log.publish_event(
             QueueEvent(
@@ -88,7 +87,7 @@ async def test_backend_contract_claim_many_claims_owned_ordered_running_records(
     all preserve priority ordering, the queue/execution filters, scheduled-record
     exclusion, and the partial-batch (fewer-than-limit) result shape.
     """
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
     high = await queue_backend.enqueue("tasks.batch.high", priority=10, queue="default")
     mid = await queue_backend.enqueue("tasks.batch.mid", priority=5, queue="default")
     low = await queue_backend.enqueue("tasks.batch.low", priority=1, queue="default")
@@ -189,7 +188,7 @@ async def test_backend_contract_lists_active_external_records_awaiting_delivery(
     come back empty for the same reason: it is what a caller passes once repair
     has already spent the pass.
     """
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
     pending = await queue_backend.enqueue("tasks.awaiting.pending", execution_backend="cloudtasks")
     scheduled = await queue_backend.enqueue(
         "tasks.awaiting.scheduled", execution_backend="cloudtasks", scheduled_at=later
@@ -255,7 +254,7 @@ async def test_backend_contract_bounds_external_reconciliation_deterministically
     from litestar_queues.backends.redis import backend as redis_backend_module
     from litestar_queues.backends.sqlspec import backend as sqlspec_backend_module
 
-    fixed_now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=UTC)
 
     class FixedDateTime(datetime):
         @classmethod
@@ -392,7 +391,7 @@ async def test_backend_contract_exposes_operational_queries_and_cleanup(queue_ba
     stored_running = await queue_backend.get_task(claimed_running.id)
     statistics = await queue_backend.get_statistics()
     completed_records = await queue_backend.list_completed_by_task("tasks.report")
-    cleanup_count = await queue_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+    cleanup_count = await queue_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
 
     assert stored_running is not None
     assert stored_running.heartbeat_at is None
@@ -495,7 +494,7 @@ async def test_backend_contract_cleanup_terminal_honors_bounded_limit(queue_back
         assert claimed is not None
         await queue_backend.complete_task(claimed.id)
 
-    before = datetime.now(timezone.utc) + timedelta(seconds=1)
+    before = datetime.now(UTC) + timedelta(seconds=1)
     first = await queue_backend.cleanup_terminal(before, limit=2)
     second = await queue_backend.cleanup_terminal(before, limit=2)
     third = await queue_backend.cleanup_terminal(before, limit=2)
@@ -840,7 +839,7 @@ async def test_queue_service_runtime_overrides_preserve_execution_metadata_and_d
     assert result.record.metadata["log_level"] == "debug"
     assert result.record.metadata["log_success"] is True
     assert result.record.scheduled_at is not None
-    assert result.record.scheduled_at > datetime.now(timezone.utc) + timedelta(minutes=4)
+    assert result.record.scheduled_at > datetime.now(UTC) + timedelta(minutes=4)
 
 
 async def test_backend_contract_forever_reservation_returns_owner_on_conflict(

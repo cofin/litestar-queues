@@ -6,7 +6,7 @@ error message interpolates task arguments, results, metadata, or the database
 path.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -139,7 +139,7 @@ def decode_payload(payload: "bytes") -> "dict[str, Any]":
 
 
 def _iso(value: "datetime | None") -> "str | None":
-    return None if value is None else value.astimezone(timezone.utc).isoformat()
+    return None if value is None else value.astimezone(UTC).isoformat()
 
 
 def _parse_datetime(value: "object") -> "datetime | None":
@@ -151,7 +151,7 @@ def _parse_datetime(value: "object") -> "datetime | None":
         parsed = datetime.fromisoformat(cast("str", value))
     except ValueError:
         raise EphemeralDatabaseError(UNREADABLE_ERROR) from None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def record_to_payload(record: "QueuedTaskRecord") -> "bytes":

@@ -8,9 +8,7 @@ Application and public helper code should import these names from
 from importlib import import_module
 from importlib.util import find_spec
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
-
-from typing_extensions import Self
+from typing import TYPE_CHECKING, Any, Self
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

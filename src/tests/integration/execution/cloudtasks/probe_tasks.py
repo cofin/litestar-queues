@@ -11,7 +11,7 @@ measure the probe rather than the topology, and the topology is the thing under
 test.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from litestar_queues import task
 
@@ -29,7 +29,7 @@ async def succeeds() -> "dict[str, str]":
         The consumer-side completion time, which is the evidence that a cold
         instance woke up and did the work.
     """
-    return {"ran_at": datetime.now(timezone.utc).isoformat()}
+    return {"ran_at": datetime.now(UTC).isoformat()}
 
 
 @task(FAILS_ALWAYS, retries=1)

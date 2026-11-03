@@ -133,7 +133,7 @@ async def test_service_rejects_lifecycle_from_history_release(
 
             try:
                 await asyncio.wait_for(attempt(), timeout=0.2)
-            except (QueueConfigurationError, asyncio.TimeoutError, asyncio.CancelledError) as exc:
+            except (TimeoutError, QueueConfigurationError, asyncio.CancelledError) as exc:
                 outcomes.append(exc)
             else:
                 outcomes.append(None)

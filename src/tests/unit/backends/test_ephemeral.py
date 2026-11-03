@@ -5,7 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -82,7 +82,7 @@ async def test_capabilities_report_sqlite_poll(backend: "EphemeralQueueBackend")
 
 
 async def test_enqueue_and_get_round_trip_every_field(backend: "EphemeralQueueBackend") -> "None":
-    scheduled = datetime.now(timezone.utc) + timedelta(hours=1)
+    scheduled = datetime.now(UTC) + timedelta(hours=1)
     expires = scheduled + timedelta(hours=2)
     record = await backend.enqueue(
         "tasks.render",
@@ -130,7 +130,7 @@ async def test_enqueue_returns_the_active_record_for_a_duplicate_key(backend: "E
 
 async def test_enqueue_many_preserves_order_and_reuses_active_keys(backend: "EphemeralQueueBackend") -> "None":
     existing = await backend.enqueue("tasks.batch", key="shared")
-    expires = datetime.now(timezone.utc) + timedelta(hours=1)
+    expires = datetime.now(UTC) + timedelta(hours=1)
 
     records = await backend.enqueue_many([
         TaskRequest(task_name="tasks.batch", key="shared"),
@@ -160,13 +160,13 @@ async def test_claim_orders_by_priority_then_creation(backend: "EphemeralQueueBa
 
 
 async def test_claim_task_skips_records_that_are_not_due(backend: "EphemeralQueueBackend") -> "None":
-    future = await backend.enqueue("tasks.future", scheduled_at=datetime.now(timezone.utc) + timedelta(hours=1))
+    future = await backend.enqueue("tasks.future", scheduled_at=datetime.now(UTC) + timedelta(hours=1))
 
     assert await backend.claim_task(future.id) is None
 
 
 async def test_expired_record_is_hidden_and_fenced_at_claim(backend: "EphemeralQueueBackend") -> "None":
-    expired = await backend.enqueue("tasks.expired", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    expired = await backend.enqueue("tasks.expired", expires_at=datetime.now(UTC) - timedelta(seconds=1))
     available = await backend.enqueue("tasks.available")
 
     pending = await backend.list_pending(limit=10)
@@ -211,7 +211,7 @@ def test_schema_version_bump_forces_rebuild(tmp_path: "Path") -> "None":
 
 
 async def test_claim_many_transitions_expired_records(backend: "EphemeralQueueBackend") -> "None":
-    expired = await backend.enqueue("tasks.expired_batch", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    expired = await backend.enqueue("tasks.expired_batch", expires_at=datetime.now(UTC) - timedelta(seconds=1))
     available = await backend.enqueue("tasks.available_batch")
 
     claimed = await backend.claim_many(limit=10)
@@ -232,14 +232,14 @@ async def test_claim_many_preserves_expired_dispatch_reservation(
 
 
 async def test_expire_overdue_is_bounded_idempotent_and_terminal(backend: "EphemeralQueueBackend") -> "None":
-    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    past = datetime.now(UTC) - timedelta(seconds=1)
     records = [await backend.enqueue(f"tasks.expire_{index}", expires_at=past) for index in range(3)]
 
     first = await backend.expire_overdue(limit=2)
     second = await backend.expire_overdue(limit=2)
     third = await backend.expire_overdue(limit=2)
     statistics = await backend.get_statistics()
-    removed = await backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+    removed = await backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
 
     assert [record.id for record in first] == [records[0].id, records[1].id]
     assert [record.id for record in second] == [records[2].id]
@@ -377,7 +377,7 @@ async def test_cleanup_terminal_removes_only_old_terminal_records(backend: "Ephe
     await backend.complete_task(record.id)
     await backend.enqueue("tasks.cleanup")
 
-    removed = await backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(minutes=1))
+    removed = await backend.cleanup_terminal(datetime.now(UTC) + timedelta(minutes=1))
 
     assert removed == 1
     assert await backend.get_task(record.id) is None
@@ -410,7 +410,7 @@ async def test_reservations_have_one_winner(backend: "EphemeralQueueBackend") ->
 async def test_time_until_next_due_uses_the_earliest_scheduled_record(backend: "EphemeralQueueBackend") -> "None":
     assert await backend.time_until_next_due() is None
 
-    await backend.enqueue("tasks.later", scheduled_at=datetime.now(timezone.utc) + timedelta(seconds=120))
+    await backend.enqueue("tasks.later", scheduled_at=datetime.now(UTC) + timedelta(seconds=120))
     remaining = await backend.time_until_next_due()
 
     assert remaining is not None
@@ -525,7 +525,7 @@ def test_codec_rejects_a_missing_magic_prefix() -> "None":
 
 
 def test_codec_round_trips_a_record_with_every_field() -> "None":
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     record = QueuedTaskRecord(
         task_name="tasks.round_trip",
         args=(1, None, "x"),
@@ -572,7 +572,7 @@ def _event(index: "int", *, second: "int | None" = None, task_name: "str" = "tas
         task_name=task_name,
         sequence=index,
         payload={"index": index},
-        occurred_at=datetime(2026, 1, 1, 0, 0, index if second is None else second, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 1, 1, 0, 0, index if second is None else second, tzinfo=UTC),
     )
 
 
@@ -617,7 +617,7 @@ async def test_event_log_filters_by_task_id_task_name_and_limit(backend: "Epheme
 
 async def test_event_log_round_trips_every_history_field(backend: "EphemeralQueueBackend") -> "None":
     log = _event_log(backend, EventHistoryConfig())
-    occurred = datetime(2026, 2, 3, 4, 5, 6, tzinfo=timezone.utc)
+    occurred = datetime(2026, 2, 3, 4, 5, 6, tzinfo=UTC)
 
     await log.publish_event(
         QueueEvent(
@@ -676,7 +676,7 @@ async def test_event_log_filters_by_actor(backend: "EphemeralQueueBackend") -> "
                 sequence=index,
                 actor=actor,
                 payload={"index": index},
-                occurred_at=datetime(2026, 1, 1, 0, 0, index, tzinfo=timezone.utc),
+                occurred_at=datetime(2026, 1, 1, 0, 0, index, tzinfo=UTC),
             )
         )
 
@@ -692,7 +692,7 @@ async def test_event_log_cleanup_events_is_bounded_and_idempotent(backend: "Ephe
     log = _event_log(backend, EventHistoryConfig(memory_capacity=3))
     for index in range(5):
         await log.publish_event(_event(index))
-    cutoff = datetime(2026, 1, 1, 0, 0, 4, tzinfo=timezone.utc)
+    cutoff = datetime(2026, 1, 1, 0, 0, 4, tzinfo=UTC)
 
     first_deleted = await log.cleanup_events(before=cutoff, limit=1)
     after_first = (await log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
@@ -920,7 +920,7 @@ async def test_dispatch_repair_concurrent_marks_preserve_newest(
     backend: "EphemeralQueueBackend", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
     record = await backend.enqueue("repair.clock", execution_backend="cloudtasks")
-    newer = datetime.now(timezone.utc) + timedelta(seconds=1)
+    newer = datetime.now(UTC) + timedelta(seconds=1)
     older = newer - timedelta(seconds=1)
     times = iter((newer, older))
     monkeypatch.setattr("litestar_queues.backends.ephemeral.backend._utc_now", lambda: next(times))
@@ -981,6 +981,6 @@ def test_dispatch_checked_at_codec_round_trip() -> "None":
     stamp = datetime(2026, 9, 7, 12, 0, tzinfo=timezone(timedelta(hours=2)))
     record = QueuedTaskRecord("repair.codec", dispatch_checked_at=stamp)
     restored = record_from_payload(record_to_payload(record))
-    assert restored.dispatch_checked_at == stamp.astimezone(timezone.utc)
+    assert restored.dispatch_checked_at == stamp.astimezone(UTC)
     assert restored.dispatch_checked_at is not None
-    assert restored.dispatch_checked_at.tzinfo == timezone.utc
+    assert restored.dispatch_checked_at.tzinfo == UTC

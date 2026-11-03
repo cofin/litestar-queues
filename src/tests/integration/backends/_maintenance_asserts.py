@@ -6,7 +6,7 @@ Valkey, SQLSpec, and Advanced Alchemy.
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -50,7 +50,7 @@ async def assert_bounded_cleanup_terminal(
         assert claimed is not None
         await backend.complete_task(claimed.id)
 
-    before = datetime.now(timezone.utc) + timedelta(seconds=1)
+    before = datetime.now(UTC) + timedelta(seconds=1)
     assert await backend.cleanup_terminal(before, limit=2) == 2
     assert await backend.cleanup_terminal(before, limit=2) == 2
     assert await backend.cleanup_terminal(before, limit=2) == 1

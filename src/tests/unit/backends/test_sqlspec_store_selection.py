@@ -8,6 +8,7 @@ what a given adapter does.
 import importlib
 import sys
 import types
+from datetime import UTC
 from typing import Any, ClassVar, cast
 from unittest.mock import MagicMock
 
@@ -127,7 +128,7 @@ async def test_connected_locking_capability_uses_server_version(is_async: bool, 
     """The real dictionary resolves version gates once on the session's thread."""
     import threading
     from contextlib import asynccontextmanager, contextmanager
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlspec.adapters.aiomysql import AiomysqlConfig
     from sqlspec.adapters.aiomysql.data_dictionary import AiomysqlDataDictionary
@@ -170,7 +171,7 @@ async def test_connected_locking_capability_uses_server_version(is_async: bool, 
         await backend.open()
         store = backend._get_store()
         assert store.supports_skip_locked is expected
-        statement = store.select_claimable(now=datetime.now(timezone.utc), limit=1).build(dialect="mysql").sql
+        statement = store.select_claimable(now=datetime.now(UTC), limit=1).build(dialect="mysql").sql
         assert ("SKIP LOCKED" in statement) is expected
         assert len(calls) == (1 if is_async else 3)
         assert len(set(calls)) == 1
@@ -182,7 +183,7 @@ async def test_connected_locking_capability_uses_server_version(is_async: bool, 
 @pytest.mark.anyio
 async def test_locking_capability_resets_on_reopen_and_gates_repair_reads() -> None:
     from contextlib import asynccontextmanager
-    from datetime import datetime, timezone
+    from datetime import datetime
     from typing import cast
 
     from sqlspec.adapters.aiomysql import AiomysqlConfig
@@ -208,9 +209,7 @@ async def test_locking_capability_resets_on_reopen_and_gates_repair_reads() -> N
     def repair_sql() -> str:
         return (
             store
-            .get_dispatch_repair_candidate(
-                task_id="task", execution_backend="cloudtasks", now=datetime.now(timezone.utc)
-            )
+            .get_dispatch_repair_candidate(task_id="task", execution_backend="cloudtasks", now=datetime.now(UTC))
             .build(dialect="mysql")
             .sql
         )

@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = [
 #   "dramatiq[redis]==2.2.0",
 #   "redis==8.0.1",

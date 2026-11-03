@@ -489,9 +489,7 @@ async def test_worker_cancellation_after_ready_propagates() -> "None":
         ready_calls += 1
         worker.allow_post_readiness_error.set()
 
-    # Python 3.10 does not preserve the raised CancelledError instance or its
-    # message across the await, so assert propagation and cleanup, not identity.
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(asyncio.CancelledError, match="post-readiness cancellation"):
         await run_worker(
             service,  # type: ignore[arg-type]
             _config(),

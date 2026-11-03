@@ -4,11 +4,6 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.execution.rabbitmq import RabbitMQExecutionConfig
 
 
-@pytest.fixture(autouse=True)
-def supported_python(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    monkeypatch.setattr("litestar_queues.execution.rabbitmq.config._PYTHON_VERSION", (3, 11))
-
-
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -37,10 +32,3 @@ def test_rabbitmq_config_defaults() -> "None":
     assert config.delayed_retry_max_ms == 30_000
     assert config.consumer_timeout_ms is None
     assert "rabbit.example" not in repr(config)
-
-
-def test_rabbitmq_config_rejects_python_310(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    monkeypatch.setattr("litestar_queues.execution.rabbitmq.config._PYTHON_VERSION", (3, 10))
-
-    with pytest.raises(QueueConfigurationError, match=r"Python 3\.11"):
-        RabbitMQExecutionConfig(amqp_url="amqp://localhost")

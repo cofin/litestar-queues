@@ -4,7 +4,7 @@ import time
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
@@ -119,7 +119,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             current = await queue_backend.clear_execution_ref(current.id, current.retry_count, current.execution_ref)
             if current is None:
                 return None
-        if current.scheduled_at is not None and current.scheduled_at > datetime.now(timezone.utc):
+        if current.scheduled_at is not None and current.scheduled_at > datetime.now(UTC):
             return None
         return await self.dispatch(service, current)
 
@@ -141,7 +141,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         page = await queue_backend.list_dispatch_repair_candidates("cloudrun", limit=limit)
         changed = failed = 0
         unchanged = page.examined - len(page.records)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for candidate in page.records:
             current = await queue_backend.get_task(candidate.id)
             if current is None or current.status not in {"pending", "scheduled"}:

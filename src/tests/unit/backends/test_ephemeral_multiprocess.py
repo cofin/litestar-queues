@@ -8,7 +8,7 @@ process boundary; every result is read back out of the shared database.
 import asyncio
 import multiprocessing
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
@@ -37,9 +37,7 @@ _START_METHODS = [method for method in ("spawn", "forkserver") if method in mult
 
 async def _produce(backend: "EphemeralQueueBackend") -> "None":
     await backend.enqueue("tasks.crossing", args=("payload",), id=PRODUCER_ID)
-    await backend.enqueue(
-        "tasks.scheduled", scheduled_at=datetime.now(timezone.utc) - timedelta(seconds=1), id=SCHEDULED_ID
-    )
+    await backend.enqueue("tasks.scheduled", scheduled_at=datetime.now(UTC) - timedelta(seconds=1), id=SCHEDULED_ID)
     await backend.enqueue("tasks.retried", max_retries=1, id=RETRIED_ID)
     await backend.reserve_identity("forever-key", task_id=RESERVED_ID, task_name="tasks.once")
     log = backend.get_event_log(EventHistoryConfig())

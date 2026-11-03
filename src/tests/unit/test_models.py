@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from litestar_queues.models import TERMINAL_STATUSES, QueuedTaskRecord, QueueStatistics
 
@@ -8,13 +8,13 @@ def test_expired_is_terminal() -> "None":
 
 
 def test_is_expired_true_when_deadline_passed() -> "None":
-    record = QueuedTaskRecord(task_name="tasks.expired", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    record = QueuedTaskRecord(task_name="tasks.expired", expires_at=datetime.now(UTC) - timedelta(seconds=1))
 
     assert record.is_expired is True
 
 
 def test_is_expired_false_when_deadline_future_or_none() -> "None":
-    future = QueuedTaskRecord(task_name="tasks.future", expires_at=datetime.now(timezone.utc) + timedelta(minutes=1))
+    future = QueuedTaskRecord(task_name="tasks.future", expires_at=datetime.now(UTC) + timedelta(minutes=1))
     without_deadline = QueuedTaskRecord(task_name="tasks.no_deadline")
 
     assert future.is_expired is False
@@ -33,13 +33,13 @@ def test_queued_task_record_coerces_naive_expires_at_to_utc() -> "None":
         expires_at=datetime(2026, 7, 25, 12, 0),  # noqa: DTZ001 - explicitly exercise naive coercion
     )
 
-    assert record.expires_at == datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    assert record.expires_at == datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
 
 def test_dispatch_checked_at_normalizes_to_utc() -> "None":
     naive = datetime(2026, 9, 7, 12, 0)  # noqa: DTZ001 - exercise naive coercion
     offset = timezone(timedelta(hours=2))
-    expected = naive.replace(tzinfo=timezone.utc)
+    expected = naive.replace(tzinfo=UTC)
     assert QueuedTaskRecord("task").dispatch_checked_at is None
     assert QueuedTaskRecord("task", dispatch_checked_at=naive).dispatch_checked_at == expected
     assert QueuedTaskRecord(

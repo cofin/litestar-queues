@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
@@ -175,8 +175,8 @@ class QueuedTaskRecord:
     retry_count: "int" = 0
     scheduled_at: "datetime | None" = None
     expires_at: "datetime | None" = None
-    created_at: "datetime" = field(default_factory=lambda: datetime.now(timezone.utc))
-    queued_at: "datetime" = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: "datetime" = field(default_factory=lambda: datetime.now(UTC))
+    queued_at: "datetime" = field(default_factory=lambda: datetime.now(UTC))
     started_at: "datetime | None" = None
     completed_at: "datetime | None" = None
     heartbeat_at: "datetime | None" = None
@@ -204,15 +204,15 @@ class QueuedTaskRecord:
     @property
     def is_due(self) -> "bool":
         """Whether the record is eligible to be claimed now."""
-        return self.scheduled_at is None or self.scheduled_at <= datetime.now(timezone.utc)
+        return self.scheduled_at is None or self.scheduled_at <= datetime.now(UTC)
 
     @property
     def is_expired(self) -> "bool":
         """Whether the not-started deadline has passed."""
-        return self.expires_at is not None and self.expires_at <= datetime.now(timezone.utc)
+        return self.expires_at is not None and self.expires_at <= datetime.now(UTC)
 
 
 def _ensure_utc_datetime(value: "datetime") -> "datetime":
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)

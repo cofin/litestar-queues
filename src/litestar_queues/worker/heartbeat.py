@@ -250,7 +250,7 @@ class WorkerHeartbeatManager:
     async def _wait_for_next_tick(self) -> "bool":
         try:
             await asyncio.wait_for(self._stop_event.wait(), timeout=self._sleep_interval())
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return True
         return False
 

@@ -1,7 +1,7 @@
 """Redis distributed maintenance coordination and bounded-operation contract."""
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
@@ -62,7 +62,7 @@ async def test_redis_bounded_maintenance_does_not_enumerate_status_sets(
     assert [record.id for record in await redis_backend.list_running_external(limit=1)] == [external.id]
     stale_result = await redis_backend.requeue_stale_running(stale_after=timedelta(seconds=-2), limit=1)
     assert stale_result.requeued + stale_result.failed == 1
-    assert await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1), limit=1) == 1
+    assert await redis_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1), limit=1) == 1
 
 
 async def test_redis_maintenance_indexes_follow_lifecycle_transitions(redis_backend: "RedisQueueBackend") -> "None":
@@ -83,7 +83,7 @@ async def test_redis_maintenance_indexes_follow_lifecycle_transitions(redis_back
     assert task_id not in {str(value) for value in await client.zrange(redis_backend._maintenance_external_key, 0, -1)}
     assert task_id in {str(value) for value in await client.zrange(redis_backend._maintenance_terminal_key, 0, -1)}
 
-    assert await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1), limit=1) == 1
+    assert await redis_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1), limit=1) == 1
     assert task_id not in {str(value) for value in await client.zrange(redis_backend._maintenance_terminal_key, 0, -1)}
 
 
@@ -93,7 +93,7 @@ async def test_redis_maintenance_indexes_tie_break_equal_timestamps_by_id(
     """Every bounded index uses the record ID as its deterministic tie-breaker."""
     from litestar_queues.backends.redis import backend as redis_backend_module
 
-    fixed_now = datetime.now(timezone.utc)
+    fixed_now = datetime.now(UTC)
     monkeypatch.setattr(redis_backend_module, "_utc_now", lambda: fixed_now)
 
     stale_high = await redis_backend.enqueue("tasks.maintenance.stale.high", id=UUID(int=2), max_retries=1)
@@ -157,13 +157,13 @@ async def test_redis_bounded_maintenance_fails_closed_until_legacy_indexes_are_r
     with pytest.raises(QueueConfigurationError, match="rebuild_maintenance_indexes"):
         await redis_backend.list_running_external(limit=1)
     with pytest.raises(QueueConfigurationError, match="rebuild_maintenance_indexes"):
-        await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1), limit=1)
+        await redis_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1), limit=1)
 
     assert await redis_backend.rebuild_maintenance_indexes() == 3
     assert await redis_backend.rebuild_maintenance_indexes() == 3
     assert [record.id for record in await redis_backend.list_running_external(limit=1)] == [external.id]
     assert (await redis_backend.requeue_stale_running(stale_after=timedelta(seconds=-1), limit=1)).requeued == 1
-    assert await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1), limit=1) == 1
+    assert await redis_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1), limit=1) == 1
 
 
 async def test_redis_backend_coordination_expiry(redis_backend: "RedisQueueBackend") -> "None":
@@ -173,7 +173,7 @@ async def test_redis_backend_coordination_expiry(redis_backend: "RedisQueueBacke
 async def test_redis_dispatch_repair_upgrade_from_closed_backend(redis_backend: "RedisQueueBackend") -> "None":
     """An old populated namespace can be explicitly upgraded without opening it."""
     future = await redis_backend.enqueue(
-        "repair.upgrade", execution_backend="cloudtasks", scheduled_at=datetime.now(timezone.utc) + timedelta(hours=1)
+        "repair.upgrade", execution_backend="cloudtasks", scheduled_at=datetime.now(UTC) + timedelta(hours=1)
     )
     client = cast("Any", await redis_backend._get_client())
     await client.set(redis_backend._maintenance_index_version_key, "2")
@@ -248,7 +248,7 @@ async def test_redis_dispatch_checked_precision_and_backward_clock(
     """Lua and rebuild retain fractional-millisecond scores and the newest mark."""
     from litestar_queues.backends.redis import backend as backend_module
 
-    created = datetime.now(timezone.utc).replace(microsecond=123456)
+    created = datetime.now(UTC).replace(microsecond=123456)
     monkeypatch.setattr(backend_module, "_utc_now", lambda: created)
     high = await redis_backend.enqueue("repair.high", id=UUID(int=2), execution_backend="cloudtasks")
     low = await redis_backend.enqueue("repair.low", id=UUID(int=1), execution_backend="cloudtasks")
@@ -322,7 +322,7 @@ async def test_redis_dispatch_repair_keyed_retry_and_terminal_membership(redis_b
     assert await client.zcard(key) == 1
     assert await redis_backend.cancel_task(record.id) is not None
     assert await client.zcard(key) == 0
-    assert await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1), limit=1) == 1
+    assert await redis_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1), limit=1) == 1
     assert await client.zcard(key) == 0
 
 

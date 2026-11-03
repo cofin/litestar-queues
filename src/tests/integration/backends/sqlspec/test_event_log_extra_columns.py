@@ -8,6 +8,8 @@ import pytest
 
 pytest.importorskip("sqlspec")
 
+from datetime import UTC
+
 from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.event_log import create_event_log_store
@@ -179,7 +181,7 @@ async def test_packaged_migration_ddl_includes_dimensions(
 async def test_filtered_history_total_precedes_page_window(
     aiosqlite_history_config: "Any", *, descending: bool, offset: int, limit: "int | None"
 ) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from msgspec.structs import replace as replace_event
 
@@ -207,7 +209,7 @@ async def test_filtered_history_total_precedes_page_window(
             entity=entity,
             actor=QueueEventActor(type="user", id="actor"),
             payload={"tenant_id": "tenant"},
-            occurred_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            occurred_at=datetime(2026, 1, 1, tzinfo=UTC),
             sequence=1,
         )
         for index in range(5):

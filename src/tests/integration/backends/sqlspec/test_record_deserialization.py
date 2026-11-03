@@ -1,6 +1,6 @@
 """SQLSpec queue record deserialization validation tests."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
@@ -25,7 +25,7 @@ class _PassthroughJSONStore:
 
 
 def _sqlspec_row(**overrides: "Any") -> "dict[str, Any]":
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     row: "dict[str, Any]" = {
         "id": str(uuid4()),
         "task_name": "tasks.example",

@@ -7,7 +7,7 @@ runs the same reservation / survival / reset / concurrency assertions so
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -72,7 +72,7 @@ async def assert_reservation_survives_terminal_cleanup(backend: "BaseQueueBacken
     assert claimed is not None
     await backend.complete_task(record.id, result=None, expected_retry_count=claimed.retry_count)
 
-    removed = await backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+    removed = await backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
     assert removed >= 1
     assert await backend.get_task(record.id) is None
 

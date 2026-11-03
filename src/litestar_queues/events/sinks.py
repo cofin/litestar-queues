@@ -115,7 +115,7 @@ class CompositeQueueEventSink:
             for sink in reversed(opened):
                 try:
                     await _call_optional_lifecycle(sink, "close")
-                except BaseException:  # noqa: PERF203
+                except BaseException:
                     self._logger.warning("Queue event sink rollback failed", exc_info=True)
             raise
         self._opened_sinks = tuple(opened)
@@ -128,7 +128,7 @@ class CompositeQueueEventSink:
         for sink in reversed(opened):
             try:
                 await _call_optional_lifecycle(sink, "close")
-            except BaseException as exc:  # noqa: PERF203
+            except BaseException as exc:
                 errors.append(exc)
                 if not self._strict and isinstance(exc, Exception):
                     self._logger.warning("Queue event sink close failed", exc_info=True)

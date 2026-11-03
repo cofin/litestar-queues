@@ -7,7 +7,7 @@ real request through the real message classes, which is the only place a drift
 between the two shows up before a deployment does.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -51,7 +51,7 @@ def _build(config: "CloudTasksExecutionConfig", record: "QueuedTaskRecord") -> "
 
 def test_every_field_survives_conversion_to_the_google_request(execution_config: "CloudTasksExecutionConfig") -> "None":
     """Plain datetimes, timedeltas, and enum names all convert without a helper."""
-    due = datetime.now(timezone.utc) + timedelta(hours=1)
+    due = datetime.now(UTC) + timedelta(hours=1)
     record = QueuedTaskRecord(task_name="probe", execution_backend="cloudtasks", scheduled_at=due)
 
     built = _build(execution_config, record)

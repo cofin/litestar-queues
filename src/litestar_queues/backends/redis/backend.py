@@ -10,7 +10,7 @@ import asyncio
 import inspect
 import json
 from contextlib import suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
@@ -2349,7 +2349,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 return await waiter
             try:
                 return await asyncio.wait_for(waiter, timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return False
         finally:
             async with self._completion_lock:
@@ -2851,10 +2851,10 @@ async def _pipeline_scard(client: "ClientLike", keys: "list[str]") -> "list[int]
 
 
 def _utc_now() -> "datetime":
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-_MIN_DATETIME = datetime(1, 1, 1, tzinfo=timezone.utc)
+_MIN_DATETIME = datetime(1, 1, 1, tzinfo=UTC)
 
 
 def _stale_sort_key(record: "QueuedTaskRecord") -> "tuple[datetime, str]":
@@ -2870,18 +2870,18 @@ def _serialize_datetime(value: "datetime | None") -> "str":
     if value is None:
         return ""
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat()
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat()
 
 
 def _deserialize_datetime(value: "Any") -> "datetime | None":
     value = _decode(value)
     if not value:
         return None
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(str(value))
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 _PRIORITY_STRIDE = 1e13
@@ -2890,8 +2890,8 @@ _PRIORITY_STRIDE = 1e13
 def _ready_score(record: "QueuedTaskRecord") -> "float":
     queued = record.queued_at
     if queued.tzinfo is None:
-        queued = queued.replace(tzinfo=timezone.utc)
-    queued_ms = queued.astimezone(timezone.utc).timestamp() * 1000.0
+        queued = queued.replace(tzinfo=UTC)
+    queued_ms = queued.astimezone(UTC).timestamp() * 1000.0
     return (-record.priority) * _PRIORITY_STRIDE + queued_ms
 
 
@@ -2899,8 +2899,8 @@ def _scheduled_score(value: "datetime | None") -> "float":
     if value is None:
         return 0.0
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).timestamp() * 1000.0
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).timestamp() * 1000.0
 
 
 def _maintenance_score(value: "datetime | None") -> "float":

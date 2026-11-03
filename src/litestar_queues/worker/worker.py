@@ -4,7 +4,7 @@ import logging
 import os
 import random
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from litestar_queues.config import WorkerConfig, execution_backend_name, queue_backend_name
@@ -623,7 +623,7 @@ class Worker:
             "terminal_cleanup", ttl=timedelta(seconds=max(self._terminal_check_interval, 1.0))
         ):
             return
-        cutoff = datetime.now(timezone.utc) - self._terminal_retention
+        cutoff = datetime.now(UTC) - self._terminal_retention
         deleted = await backend.cleanup_terminal(cutoff, limit=self._batch_size * 10)
         if deleted:
             self._record_counter(
@@ -755,7 +755,7 @@ class Worker:
     async def _consume_wait_task(self, task: "asyncio.Task[bool]") -> "bool | None":
         try:
             result = task.result()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
         except asyncio.CancelledError:
             raise
@@ -785,7 +785,7 @@ class Worker:
         """
         try:
             return task.result()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
         except asyncio.CancelledError:
             raise

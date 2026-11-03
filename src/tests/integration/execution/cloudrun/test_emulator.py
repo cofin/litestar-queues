@@ -3,7 +3,7 @@ import importlib
 import logging
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -156,9 +156,7 @@ async def test_cloudrun_dispatch_reservation_rejects_an_expired_record_before_si
         execution_backend=backend,
     ) as service:
         record = await queue_backend.enqueue(
-            "tasks.expired_remote",
-            execution_backend="cloudrun",
-            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            "tasks.expired_remote", execution_backend="cloudrun", expires_at=datetime.now(UTC) - timedelta(seconds=1)
         )
 
         execution_ref = await backend.dispatch(service, record)
@@ -454,13 +452,13 @@ async def test_cloudrun_reconcile_recovers_stale_reservation_and_expires_task() 
         record = await queue_backend.enqueue(
             "tasks.abandoned_dispatch",
             execution_backend="cloudrun",
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=1),
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
         )
         reserved = await queue_backend.reserve_external_dispatch(
             record.id, "cloudrun", "__litestar_queues_dispatching__:0:abandoned"
         )
         assert reserved is not None
-        reserved.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        reserved.expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
         updated = await backend.reconcile(service, reserved)
         stored = await queue_backend.get_task(record.id)
@@ -601,7 +599,7 @@ async def test_cloudrun_reconcile_does_not_terminal_write_after_stale_retry_reas
         await queue_backend.set_execution_ref(record.id, "cloudrun", "executions/run-1")
         claimed = await queue_backend.claim_task(record.id)
         assert claimed is not None
-        claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+        claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
         stale_result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=1))
 
         updated = await backend.reconcile(service, claimed)
@@ -759,7 +757,7 @@ def test_cloudrun_factory_registration_and_import_boundary() -> "None":
 
 
 async def test_cloudrun_cancel_execution_uses_the_stored_resource_name() -> "None":
-    from datetime import datetime, timezone
+    from datetime import datetime
     from uuid import uuid4
 
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
@@ -773,7 +771,7 @@ async def test_cloudrun_cancel_execution_uses_the_stored_resource_name() -> "Non
         id=uuid4(),
         task_name="tasks.ext",
         status="running",
-        queued_at=datetime.now(timezone.utc),
+        queued_at=datetime.now(UTC),
         execution_ref="projects/test-project/locations/us-central1/jobs/worker/executions/run-1",
         queue="default",
         execution_backend="cloudrun",
@@ -789,7 +787,7 @@ async def test_cloudrun_cancel_execution_uses_the_stored_resource_name() -> "Non
 
 
 async def test_cloudrun_cancel_execution_not_found_is_idempotent() -> "None":
-    from datetime import datetime, timezone
+    from datetime import datetime
     from uuid import uuid4
 
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
@@ -804,7 +802,7 @@ async def test_cloudrun_cancel_execution_not_found_is_idempotent() -> "None":
         id=uuid4(),
         task_name="tasks.ext",
         status="running",
-        queued_at=datetime.now(timezone.utc),
+        queued_at=datetime.now(UTC),
         execution_ref="projects/test-project/locations/us-central1/jobs/worker/executions/run-1",
         queue="default",
         execution_backend="cloudrun",
@@ -818,7 +816,7 @@ async def test_cloudrun_cancel_execution_not_found_is_idempotent() -> "None":
 
 
 async def test_cloudrun_cancel_execution_transient_error_is_retryable() -> "None":
-    from datetime import datetime, timezone
+    from datetime import datetime
     from uuid import uuid4
 
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
@@ -832,7 +830,7 @@ async def test_cloudrun_cancel_execution_transient_error_is_retryable() -> "None
         id=uuid4(),
         task_name="tasks.ext",
         status="running",
-        queued_at=datetime.now(timezone.utc),
+        queued_at=datetime.now(UTC),
         execution_ref="projects/test-project/locations/us-central1/jobs/worker/executions/run-1",
         queue="default",
         execution_backend="cloudrun",
@@ -847,7 +845,7 @@ async def test_cloudrun_cancel_execution_transient_error_is_retryable() -> "None
 
 
 async def test_cloudrun_cancel_execution_without_a_reference_is_unsupported() -> "None":
-    from datetime import datetime, timezone
+    from datetime import datetime
     from uuid import uuid4
 
     from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
@@ -862,7 +860,7 @@ async def test_cloudrun_cancel_execution_without_a_reference_is_unsupported() ->
         id=uuid4(),
         task_name="tasks.ext",
         status="running",
-        queued_at=datetime.now(timezone.utc),
+        queued_at=datetime.now(UTC),
         execution_ref=None,
         queue="default",
         execution_backend="cloudrun",
@@ -880,7 +878,7 @@ async def test_cloudrun_cancel_execution_without_a_reference_is_unsupported() ->
 
 
 async def test_cloudrun_cancel_execution_does_not_await_the_operation() -> "None":
-    from datetime import datetime, timezone
+    from datetime import datetime
     from uuid import uuid4
 
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
@@ -904,7 +902,7 @@ async def test_cloudrun_cancel_execution_does_not_await_the_operation() -> "None
         id=uuid4(),
         task_name="tasks.ext",
         status="running",
-        queued_at=datetime.now(timezone.utc),
+        queued_at=datetime.now(UTC),
         execution_ref="projects/test-project/locations/us-central1/jobs/worker/executions/run-1",
         queue="default",
         execution_backend="cloudrun",

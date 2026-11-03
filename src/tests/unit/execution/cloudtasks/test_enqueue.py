@@ -15,7 +15,7 @@ carrying the delivery name repair will look for.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -380,7 +380,7 @@ async def test_a_record_that_expires_on_enqueue_is_never_delivered(harness: "Cal
     """Expiry runs before scheduling, so Google is never asked to deliver it."""
     live = await harness()
 
-    result = await live.service.enqueue(probe, expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    result = await live.service.enqueue(probe, expires_at=datetime.now(UTC) - timedelta(seconds=1))
 
     assert live.client.create_calls == []
     assert result.record is not None

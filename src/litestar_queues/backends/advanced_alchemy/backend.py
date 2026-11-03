@@ -2,7 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
@@ -59,7 +59,7 @@ _POSTGRES_NOTIFY_PAYLOAD = "tasks"
 
 
 def _utc_now() -> "datetime":
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class SQLAlchemyBackend(BaseQueueBackend):
@@ -917,12 +917,12 @@ class SQLAlchemyBackend(BaseQueueBackend):
     def _reservation_from_model(self, model: "Any") -> "TaskReservation":
         created_at = model.created_at
         if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
+            created_at = created_at.replace(tzinfo=UTC)
         return TaskReservation(
             key=str(model.identity_key),
             task_id=UUID(str(model.task_id)),
             task_name=str(model.task_name),
-            created_at=created_at.astimezone(timezone.utc),
+            created_at=created_at.astimezone(UTC),
         )
 
     def _event_history_enabled(self) -> "bool":

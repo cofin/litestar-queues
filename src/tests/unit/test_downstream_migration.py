@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 
 import pytest
@@ -44,12 +44,12 @@ async def test_downstream_style_schedules_preserve_task_metadata_and_jitter(
     async def distributed_task() -> "dict[str, bool]":
         return {"ok": True}
 
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     async with QueueService(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
     ) as service:
         records = await service.initialize_schedules()
-    after = datetime.now(timezone.utc)
+    after = datetime.now(UTC)
 
     by_task_name = {record.task_name: record for record in records}
     weekly_record = by_task_name["jobs.weekly_report"]
@@ -83,7 +83,7 @@ async def test_initialize_schedules_replaces_changed_schedule_definition() -> "N
         old_record = await service.get_queue_backend().enqueue(
             "jobs.changed_schedule",
             key="scheduled:jobs.changed_schedule",
-            scheduled_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+            scheduled_at=datetime.now(UTC) + timedelta(seconds=60),
             metadata={"schedule": get_scheduled_tasks()["jobs.changed_schedule"].as_metadata()},
         )
 

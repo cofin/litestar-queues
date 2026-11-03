@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -31,7 +31,7 @@ async def test_cloudtasks_cancel_execution_deletes_the_stored_delivery() -> "Non
         id=uuid4(),
         task_name="tasks.foo",
         status="running",
-        queued_at=datetime.now(timezone.utc),
+        queued_at=datetime.now(UTC),
         execution_ref=task_name,
         queue="default",
         execution_backend="cloudtasks",
@@ -65,7 +65,7 @@ async def test_cloudtasks_cancel_execution_missing_delivery_is_idempotent() -> "
         id=uuid4(),
         task_name="tasks.foo",
         status="running",
-        queued_at=datetime.now(timezone.utc),
+        queued_at=datetime.now(UTC),
         execution_ref=task_name,
         queue="default",
         execution_backend="cloudtasks",
@@ -104,7 +104,7 @@ async def test_cloudtasks_cancel_execution_api_error_is_retryable() -> "None":
         id=uuid4(),
         task_name="tasks.foo",
         status="running",
-        queued_at=datetime.now(timezone.utc),
+        queued_at=datetime.now(UTC),
         execution_ref=task_name,
         queue="default",
         execution_backend="cloudtasks",
@@ -136,7 +136,7 @@ async def test_cloudtasks_cancel_execution_without_a_reference_is_unsupported() 
         id=uuid4(),
         task_name="tasks.foo",
         status="running",
-        queued_at=datetime.now(timezone.utc),
+        queued_at=datetime.now(UTC),
         execution_ref=None,
         queue="default",
         execution_backend="cloudtasks",

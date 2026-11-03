@@ -18,6 +18,10 @@ on:
         required: false
         type: number
         default: 60
+      allow-failure:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,6 +29,7 @@ permissions:
 jobs:
   test:
     runs-on: ${{ inputs.os }}
+    continue-on-error: ${{ inputs.allow-failure }}
     timeout-minutes: ${{ inputs.timeout }}
     env:
       PYTHON_VERSION: ${{ inputs.python-version }}

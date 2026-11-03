@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from litestar_queues.events.history import QueueEventLogRecord, extract_event_extras
@@ -80,15 +80,15 @@ def parse_datetime(value: "Any") -> "datetime":
     else:
         if isinstance(value, bytes | bytearray):
             value = bytes(value).decode()
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value))
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def utc_now() -> "datetime":
     """Return the current UTC timestamp."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def optional_str(value: "Any") -> "str | None":

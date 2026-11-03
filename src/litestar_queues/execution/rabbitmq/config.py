@@ -1,4 +1,3 @@
-import sys
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.parse import urlsplit
@@ -9,8 +8,6 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
 
 __all__ = ("RabbitMQExecutionConfig",)
-
-_PYTHON_VERSION = sys.version_info[:2]
 
 
 @dataclass(slots=True)
@@ -38,9 +35,6 @@ class RabbitMQExecutionConfig:
     """Optional acknowledgement timeout; must exceed legitimate task duration."""
 
     def __post_init__(self) -> "None":
-        if _PYTHON_VERSION < (3, 11):
-            msg = "RabbitMQ execution requires Python 3.11 or newer."
-            raise QueueConfigurationError(msg)
         parsed = urlsplit(self.amqp_url)
         if parsed.scheme not in {"amqp", "amqps"} or not parsed.hostname:
             msg = "RabbitMQExecutionConfig.amqp_url must be an absolute amqp:// or amqps:// URL."

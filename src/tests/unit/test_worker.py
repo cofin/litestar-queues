@@ -3,7 +3,7 @@ import logging
 import os
 import threading
 from contextlib import suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from unittest import mock
 
@@ -573,7 +573,7 @@ async def test_worker_external_dispatch_skips_expired_record() -> "None":
         execution_backend=execution_backend,
     ) as service:
         record = await backend.enqueue("tasks.external_expired")
-        record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        record.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         worker = Worker(service)
 
         dispatched = await worker._dispatch_external([record])
@@ -2947,7 +2947,7 @@ async def test_worker_maybe_cleanup_terminal_sweeps_expired_terminal_records() -
         await backend.claim_task(old_record.id)
         completed_old = await backend.complete_task(old_record.id)
         assert completed_old is not None
-        completed_old.completed_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+        completed_old.completed_at = datetime.now(UTC) - timedelta(seconds=120)
 
         fresh_record = await backend.enqueue("tasks.terminal.fresh")
         await backend.claim_task(fresh_record.id)

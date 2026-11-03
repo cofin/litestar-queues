@@ -11,7 +11,7 @@ The client is always injected. ``google-cloud-tasks`` is never imported here --
 the request has to be ordinary Python data or these assertions could not exist.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -205,7 +205,7 @@ async def test_the_request_carries_an_oidc_token_for_the_configured_audience(har
 
 async def test_the_request_carries_the_records_schedule_time(harness: "Callable[..., Any]") -> "None":
     live = await harness()
-    due = datetime.now(timezone.utc) + timedelta(minutes=30)
+    due = datetime.now(UTC) + timedelta(minutes=30)
     record = await live.enqueue(scheduled_at=due)
 
     await live.schedule(record)
@@ -402,7 +402,7 @@ async def test_already_exists_requires_the_same_eligible_attempt(
         elif change == "backend":
             record.execution_backend = "cloudrun"
         else:
-            record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            record.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         message = "provider collision"
         raise AlreadyExists(message)
 
@@ -458,7 +458,7 @@ async def test_the_dispatch_error_leaks_no_transport_detail(harness: "Callable[.
     async def _leaky(call: "Any") -> "None":
         msg = (
             f"403 calling {live.execution_config.target_url} as "
-            f"{live.execution_config.service_account_email}: token ya29.leaked-credential"
+            f"{live.execution_config.service_account_email}: token oauth2.leaked-credential"
         )
         raise ServiceUnavailable(msg)
 
@@ -473,7 +473,7 @@ async def test_the_dispatch_error_leaks_no_transport_detail(harness: "Callable[.
         live.execution_config.target_url,
         live.execution_config.service_account_email,
         live.execution_config.audience,
-        "ya29.leaked-credential",
+        "oauth2.leaked-credential",
     ):
         assert secret is not None
         assert secret not in message
@@ -485,7 +485,7 @@ async def test_a_failed_create_publishes_one_sanitized_event(harness: "Callable[
     record = await live.enqueue()
 
     async def _leaky(call: "Any") -> "None":
-        msg = f"503 calling {live.execution_config.target_url}: ya29.leaked-credential"
+        msg = f"503 calling {live.execution_config.target_url}: oauth2.leaked-credential"
         raise ServiceUnavailable(msg)
 
     live.client.on_create = _leaky
@@ -500,7 +500,7 @@ async def test_a_failed_create_publishes_one_sanitized_event(harness: "Callable[
     ]
     assert len(failures) == 1
     assert failures[0].task_id == str(record.id)
-    assert "ya29.leaked-credential" not in repr(failures[0].payload)
+    assert "oauth2.leaked-credential" not in repr(failures[0].payload)
 
 
 async def test_a_terminal_record_is_never_delivered(harness: "Callable[..., Any]") -> "None":
@@ -531,7 +531,7 @@ async def test_a_record_absent_from_storage_is_never_delivered(harness: "Callabl
 async def test_a_record_beyond_the_schedule_horizon_is_refused(harness: "Callable[..., Any]") -> "None":
     """Cloud Tasks rejects a schedule past thirty days; failing here keeps the reason legible."""
     live = await harness()
-    record = await live.enqueue(scheduled_at=datetime.now(timezone.utc) + timedelta(days=31))
+    record = await live.enqueue(scheduled_at=datetime.now(UTC) + timedelta(days=31))
 
     with pytest.raises(QueueDispatchError) as error:
         await live.schedule(record)

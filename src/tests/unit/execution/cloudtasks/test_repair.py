@@ -15,7 +15,7 @@ split between repair and ordinary reconciliation.
 
 import asyncio
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -153,7 +153,7 @@ async def test_null_ref_survives_a_fresh_service(harness: "Callable[..., Any]", 
     record = await storage.enqueue(
         "cloudtasks.crash",
         execution_backend="cloudtasks",
-        scheduled_at=datetime.now(timezone.utc) + timedelta(hours=1) if future else None,
+        scheduled_at=datetime.now(UTC) + timedelta(hours=1) if future else None,
     )
     fresh = QueueService(live.service.config, queue_backend=storage, execution_backend=live.backend)
     try:
@@ -216,7 +216,7 @@ async def test_lookup_cannot_reserve_a_changed_attempt(harness: "Callable[..., A
             await storage.set_execution_backend(record.id, "cloudrun")
         else:
             await storage.cancel_task(record.id)
-            await storage.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+            await storage.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
 
     live.client.on_get = change_during_lookup
     result = await live.repair(limit=1)
@@ -298,7 +298,7 @@ async def test_repair_rechecks_ownership_after_cas_before_rpc(
         if change in {"cancel", "delete"}:
             await storage.cancel_task(record.id)
             if change == "delete":
-                await storage.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+                await storage.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
         elif change in {"claim", "retry"}:
             await storage.claim_task(record.id)
             if change == "retry":
@@ -306,7 +306,7 @@ async def test_repair_rechecks_ownership_after_cas_before_rpc(
         elif change == "backend":
             await storage.set_execution_backend(record.id, "cloudrun")
         else:
-            record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            record.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         return live.client
 
     monkeypatch.setattr(type(live.backend), "_get_client", client_after_change)

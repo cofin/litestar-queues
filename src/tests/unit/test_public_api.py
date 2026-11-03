@@ -1,12 +1,9 @@
 import subprocess
 import sys
+import tomllib
+from datetime import UTC
 from inspect import signature
 from pathlib import Path
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 
 def test_public_exports() -> "None":
@@ -356,15 +353,15 @@ assert "sqlspec" not in sys.modules
 
 def test_queued_task_record_normalizes_naive_scheduled_at() -> "None":
     """Queued records normalize naive scheduled datetimes before due checks."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from litestar_queues import QueuedTaskRecord
 
-    naive_scheduled_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None)
+    naive_scheduled_at = (datetime.now(UTC) - timedelta(minutes=1)).replace(tzinfo=None)
 
     record = QueuedTaskRecord(task_name="example", scheduled_at=naive_scheduled_at)
 
-    assert record.scheduled_at == naive_scheduled_at.replace(tzinfo=timezone.utc)
+    assert record.scheduled_at == naive_scheduled_at.replace(tzinfo=UTC)
     assert record.is_due is True
 
 

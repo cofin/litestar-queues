@@ -9,7 +9,7 @@ pytest.importorskip("sqlalchemy")
 import asyncio
 import sqlite3
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 from advanced_alchemy.base import UUIDAuditBase
@@ -93,7 +93,7 @@ async def test_advanced_alchemy_event_log_records_queries_and_cleans_up(tmp_path
         task_name_records = (
             await event_log.query_events(QueueEventQuery(task_name=aa_event_history_task.name, limit=2))
         ).items
-        cutoff = datetime.now(timezone.utc) + timedelta(seconds=1)
+        cutoff = datetime.now(UTC) + timedelta(seconds=1)
         first_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
         after_first = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
         second_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
@@ -191,7 +191,7 @@ async def test_aa_history_replay_round_trip_and_conflict(aa_history_backend: "SQ
         progress_current=0.123456789,
         progress_total=123.456789,
         progress_percent=12.3456789,
-        occurred_at=datetime(2026, 1, 2, 3, 4, 5, 900000, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 1, 2, 3, 4, 5, 900000, tzinfo=UTC),
         payload={"nested": {"value": [1, 2]}, "stage": "load", "duration_ms": 0.123456789},
     )
     await log.publish_event(event)
@@ -218,9 +218,7 @@ async def test_aa_history_replay_round_trip_and_conflict(aa_history_backend: "SQ
 @pytest.mark.parametrize("aa_history_backend", [3], indirect=True)
 async def test_aa_history_replay_custom_timestamp_precision(aa_history_backend: "SQLAlchemyBackend") -> None:
     log = aa_history_backend.get_event_log(EventHistoryConfig(batch_size=20, strict=True))
-    event = QueueEvent(
-        type="task.log", scope="task", occurred_at=datetime(2026, 1, 2, 3, 4, 5, 900501, tzinfo=timezone.utc)
-    )
+    event = QueueEvent(type="task.log", scope="task", occurred_at=datetime(2026, 1, 2, 3, 4, 5, 900501, tzinfo=UTC))
     await log.publish_event(event)
     await log.flush_events()
     original = (await log.query_events()).items[0]
@@ -253,9 +251,7 @@ async def test_aa_history_uncertain_commit_retains_identity(aa_history_backend: 
         service_factory=backend._event_log_service,
         transaction_factory=transaction,
     )
-    event = QueueEvent(
-        type="task.log", scope="task", occurred_at=datetime(2026, 1, 2, 3, 4, 5, 900000, tzinfo=timezone.utc)
-    )
+    event = QueueEvent(type="task.log", scope="task", occurred_at=datetime(2026, 1, 2, 3, 4, 5, 900000, tzinfo=UTC))
     released = []
 
     async def release() -> None:

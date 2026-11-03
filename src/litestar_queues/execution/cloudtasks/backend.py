@@ -12,7 +12,7 @@ leaves a handle to look the delivery up by.
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
@@ -564,7 +564,7 @@ def _same_attempt(current: "QueuedTaskRecord", snapshot: "QueuedTaskRecord", ref
         and current.retry_count == snapshot.retry_count
         and current.execution_ref == reference
         and current.status in _REPAIRABLE_STATUSES
-        and (current.expires_at is None or current.expires_at > datetime.now(timezone.utc))
+        and (current.expires_at is None or current.expires_at > datetime.now(UTC))
     )
 
 
@@ -585,9 +585,7 @@ def _validate_schedulable(record: "QueuedTaskRecord", config: "CloudTasksExecuti
             f"polls on a Cloud Tasks queue; it would never run."
         )
         raise QueueConfigurationError(msg)
-    if record.scheduled_at is not None and record.scheduled_at > datetime.now(timezone.utc) + (
-        CLOUD_TASKS_MAX_SCHEDULE_HORIZON
-    ):
+    if record.scheduled_at is not None and record.scheduled_at > datetime.now(UTC) + (CLOUD_TASKS_MAX_SCHEDULE_HORIZON):
         msg = (
             f"Task {record.id} is scheduled beyond the "
             f"{CLOUD_TASKS_MAX_SCHEDULE_HORIZON.days}-day Cloud Tasks horizon; "

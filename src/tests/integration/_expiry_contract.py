@@ -1,7 +1,7 @@
 """Shared pending-job expiration assertions for every queue backend."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -12,9 +12,9 @@ from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
 
 
 async def assert_expired_claim_is_fenced(queue_backend: "BaseQueueBackend") -> "None":
-    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    past = datetime.now(UTC) - timedelta(seconds=1)
     overdue = await queue_backend.enqueue("tasks.overdue", expires_at=past)
-    live = await queue_backend.enqueue("tasks.live", expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+    live = await queue_backend.enqueue("tasks.live", expires_at=datetime.now(UTC) + timedelta(hours=1))
 
     claimed = await queue_backend.claim_task(overdue.id)
     stored_overdue = await queue_backend.get_task(overdue.id)
@@ -28,12 +28,12 @@ async def assert_expired_claim_is_fenced(queue_backend: "BaseQueueBackend") -> "
 
 
 async def assert_expire_overdue_transitions_and_reports(queue_backend: "BaseQueueBackend") -> "None":
-    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    past = datetime.now(UTC) - timedelta(seconds=1)
     records = [await queue_backend.enqueue(f"tasks.expire.{index}", expires_at=past) for index in range(3)]
 
     expired = await queue_backend.expire_overdue(limit=len(records))
     statistics = await queue_backend.get_statistics()
-    removed = await queue_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+    removed = await queue_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
 
     assert len(expired) == len(records)
     assert {record.id for record in expired} == {record.id for record in records}
@@ -43,9 +43,9 @@ async def assert_expire_overdue_transitions_and_reports(queue_backend: "BaseQueu
 
 
 async def assert_claim_many_reports_owned_expirations(queue_backend: "BaseQueueBackend") -> "None":
-    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    past = datetime.now(UTC) - timedelta(seconds=1)
     overdue = await queue_backend.enqueue("tasks.batch_overdue", expires_at=past)
-    live = await queue_backend.enqueue("tasks.batch_live", expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+    live = await queue_backend.enqueue("tasks.batch_live", expires_at=datetime.now(UTC) + timedelta(hours=1))
 
     claimed, expired = await queue_backend.claim_many_with_expired(limit=1)
 
@@ -57,7 +57,7 @@ async def assert_claim_many_reports_owned_expirations(queue_backend: "BaseQueueB
 async def assert_expiry_fences_retry_requeue(queue_backend: "BaseQueueBackend") -> "None":
     # Leave enough headroom for remote databases to enqueue and claim under a
     # loaded integration matrix before deliberately waiting out the deadline.
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=10)
+    expires_at = datetime.now(UTC) + timedelta(seconds=10)
     record = await queue_backend.enqueue("tasks.retry_expiry", max_retries=1, expires_at=expires_at)
     claimed = await queue_backend.claim_task(record.id)
     assert claimed is not None
@@ -67,7 +67,7 @@ async def assert_expiry_fences_retry_requeue(queue_backend: "BaseQueueBackend") 
     assert requeued is not None
     assert requeued.status == "pending"
     assert requeued.expires_at is not None
-    remaining = (requeued.expires_at - datetime.now(timezone.utc)).total_seconds()
+    remaining = (requeued.expires_at - datetime.now(UTC)).total_seconds()
     if remaining > 0:
         await asyncio.sleep(remaining + 0.25)
 
@@ -80,9 +80,7 @@ async def assert_expiry_fences_retry_requeue(queue_backend: "BaseQueueBackend") 
 
 
 async def assert_future_deadline_is_claimable(queue_backend: "BaseQueueBackend") -> "None":
-    record = await queue_backend.enqueue(
-        "tasks.future_expiry", expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
-    )
+    record = await queue_backend.enqueue("tasks.future_expiry", expires_at=datetime.now(UTC) + timedelta(hours=1))
 
     claimed = await queue_backend.claim_task(record.id)
     assert claimed is not None
@@ -100,12 +98,10 @@ async def assert_external_dispatch_reservation_is_fenced(queue_backend: "BaseQue
     first_reservation = f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}first"
     second_reservation = f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}second"
     expired = await queue_backend.enqueue(
-        "tasks.expired_dispatch",
-        execution_backend="cloudrun",
-        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        "tasks.expired_dispatch", execution_backend="cloudrun", expires_at=datetime.now(UTC) - timedelta(seconds=1)
     )
     live = await queue_backend.enqueue(
-        "tasks.live_dispatch", execution_backend="cloudrun", expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
+        "tasks.live_dispatch", execution_backend="cloudrun", expires_at=datetime.now(UTC) + timedelta(hours=1)
     )
 
     assert await queue_backend.reserve_external_dispatch(expired.id, "cloudrun", expired_reservation) is None
@@ -121,7 +117,7 @@ async def assert_external_dispatch_reservation_is_fenced(queue_backend: "BaseQue
         "tasks.finalizable_dispatch",
         queue="finalize-fence",
         execution_backend="cloudrun",
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
     first = await queue_backend.reserve_external_dispatch(finalizable.id, "cloudrun", first_reservation)
     assert first is not None
@@ -180,7 +176,7 @@ async def assert_finalized_dispatch_claims_after_queue_deadline(queue_backend: "
     record = await queue_backend.enqueue(
         "tasks.finalized_before_deadline",
         execution_backend="cloudrun",
-        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        expires_at=datetime.now(UTC) - timedelta(seconds=1),
     )
     finalized = await queue_backend.set_execution_ref(record.id, "cloudrun", "operations/accepted-before-deadline")
     assert finalized is not None

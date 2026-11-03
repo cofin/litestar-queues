@@ -9,7 +9,7 @@ Oracle async configs) by the subdir conftest.
 import asyncio
 import sys
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from subprocess import run
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
@@ -145,7 +145,7 @@ async def test_advanced_alchemy_concurrent_expiry_sweeps_report_one_owner(
     advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
     record = await advanced_alchemy_backend.enqueue(
-        "tasks.concurrent_expiry", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+        "tasks.concurrent_expiry", expires_at=datetime.now(UTC) - timedelta(seconds=1)
     )
 
     outcomes = await asyncio.gather(
@@ -212,7 +212,7 @@ def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects(
         _supports_skip_locked_claim,
     )
 
-    claim_time = datetime.now(timezone.utc)
+    claim_time = datetime.now(UTC)
     postgres_statement = _build_claim_candidate_statement(
         ContractQueueTask,
         queue=None,
@@ -330,7 +330,7 @@ async def test_advanced_alchemy_enqueue_many_uses_one_operation_and_coalesces_du
     )
     await backend.open()
     try:
-        later = datetime.now(timezone.utc) + timedelta(minutes=5)
+        later = datetime.now(UTC) + timedelta(minutes=5)
         records = await backend.enqueue_many([
             TaskRequest("tasks.bulk.first", key="bulk:active", kwargs={"value": 1}),
             TaskRequest("tasks.bulk.future", scheduled_at=later),
@@ -406,7 +406,7 @@ async def test_advanced_alchemy_claim_many_falls_back_safely_on_sqlite(
     first = await advanced_alchemy_backend.enqueue("tasks.claim.first", priority=1)
     second = await advanced_alchemy_backend.enqueue("tasks.claim.second", priority=10)
     future = await advanced_alchemy_backend.enqueue(
-        "tasks.claim.future", priority=100, scheduled_at=datetime.now(timezone.utc) + timedelta(minutes=5)
+        "tasks.claim.future", priority=100, scheduled_at=datetime.now(UTC) + timedelta(minutes=5)
     )
 
     claimed = await advanced_alchemy_backend.claim_many(limit=5)
@@ -677,7 +677,7 @@ async def test_advanced_alchemy_postgres_uncommitted_row_does_not_wake_committed
 async def test_advanced_alchemy_backend_claims_due_tasks_by_priority(
     advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     low = await advanced_alchemy_backend.enqueue("tasks.low", priority=1)
     scheduled = await advanced_alchemy_backend.enqueue("tasks.later", priority=100, scheduled_at=later)
@@ -829,9 +829,7 @@ async def test_advanced_alchemy_backend_operational_queries_and_execution_refs(
     external = await advanced_alchemy_backend.enqueue(
         "tasks.remote", execution_backend="cloudrun", execution_profile="batch-small"
     )
-    completed = await advanced_alchemy_backend.enqueue(
-        "tasks.report", metadata={"encoded_at": datetime.now(timezone.utc)}
-    )
+    completed = await advanced_alchemy_backend.enqueue("tasks.report", metadata={"encoded_at": datetime.now(UTC)})
 
     pending = await advanced_alchemy_backend.list_pending(limit=10, execution_backend="cloudrun")
     claimed = await advanced_alchemy_backend.claim_next(execution_backend="cloudrun")
@@ -851,7 +849,7 @@ async def test_advanced_alchemy_backend_operational_queries_and_execution_refs(
     stored_local = await advanced_alchemy_backend.get_task(local.id)
     statistics = await advanced_alchemy_backend.get_statistics()
     completed_records = await advanced_alchemy_backend.list_completed_by_task("tasks.report")
-    cleanup_count = await advanced_alchemy_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+    cleanup_count = await advanced_alchemy_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
 
     assert [record.id for record in running_external] == [external.id]
     assert running_external[0].execution_ref == "jobs/abc-123"

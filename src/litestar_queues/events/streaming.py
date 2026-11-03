@@ -273,7 +273,7 @@ async def _pump_heartbeat(
     while not stop.is_set():
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         else:
             return
