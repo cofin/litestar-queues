@@ -13,23 +13,21 @@
 | **Worker Runtime** | `worker` | [`WorkerConfig`](workers.md) | Placement (`"server"`, `"asgi"`, `"external"`), concurrency, adaptive polling, heartbeats, stale recovery, and terminal cleanup |
 | **Maintenance** | `maintenance` | [`QueueMaintenanceConfig`](../execution/maintenance.md) | Distributed lease coordination, operation selection, and signed HTTP maintenance endpoint mounting |
 | **Events & Streams** | `events` | [`QueueEventsConfig`](../events/index.md) | Live SSE/WebSocket stream routes, durable event history retention, and ring buffer tuning |
-| **Observability** | `observability` | [`ObservabilityConfig`](../events/observability.md) | OpenTelemetry tracing and metrics instrumentation (`"auto"`, `"enabled"`, `"disabled"`) |
+| **Observability** | `observability` | [`ObservabilityConfig`](../events/observability.md) | OpenTelemetry tracing, Prometheus metrics, and SQLCommenter attribution (`enable_otel`, `enable_prometheus`, `enable_sqlcommenter`) |
 
 ## Complete Production Configuration Example
 
 ```python
 from litestar import Litestar
 from litestar_queues import (
-    EventHistoryConfig,
-    EventStreamConfig,
-    ObservabilityConfig,
     QueueConfig,
-    QueueEventsConfig,
     QueueMaintenanceConfig,
     QueuePlugin,
     WorkerConfig,
 )
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecWorkerWakeupConfig
+from litestar_queues.events import EventHistoryConfig, EventStreamConfig, QueueEventsConfig
+from litestar_queues.observability import ObservabilityConfig
 from sqlspec.adapters.asyncpg import AsyncpgConfig
 
 db_config = AsyncpgConfig(connection_config={"dsn": "postgresql://app:secret@db.internal:5432/app"})
@@ -61,7 +59,11 @@ queue_config = QueueConfig(
         history=EventHistoryConfig(batch_size=20, flush_interval=1.0),
         stream=EventStreamConfig(path="/queues/events"),
     ),
-    observability=ObservabilityConfig(mode="auto"),
+    observability=ObservabilityConfig(
+        enable_otel=None,
+        enable_prometheus=None,
+        enable_sqlcommenter=None,
+    ),
 )
 
 app = Litestar(plugins=[QueuePlugin(config=queue_config)])
