@@ -535,3 +535,16 @@ async def test_initial_migration_applies_configured_terminal_ttl(adapter: "str",
     context = types.SimpleNamespace(config=sqlspec_config)
     statements = await migration.up(cast("Any", context))
     assert any(expected_clause in stmt for stmt in statements)
+
+
+@pytest.mark.parametrize("adapter", [*sorted(_ADAPTER_BEHAVIOR), "adbc"])
+@pytest.mark.parametrize("terminal_ttl", [None, 3600.0])
+def test_create_queue_store_instantiates_every_adapter_with_terminal_ttl(
+    adapter: "str", terminal_ttl: "float | None"
+) -> "None":
+    """Every adapter store accepts terminal_ttl through create_queue_store."""
+    dialect = "sqlite" if adapter == "adbc" else ("tsql" if adapter == "arrow_odbc" else None)
+    config = _fake_config(adapter, is_async=(adapter not in {"spanner", "sqlite", "adbc"}), dialect=dialect)
+    store = create_queue_store(config, terminal_ttl=terminal_ttl)
+    assert isinstance(store, SQLSpecQueueStore)
+    assert store._terminal_ttl == terminal_ttl
