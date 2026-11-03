@@ -43,10 +43,7 @@ class _RecordingChannelsPlugin(ChannelsPlugin):
         return self.entered
 
     async def __aexit__(
-        self,
-        exc_type: "type[BaseException] | None",  # noqa: PYI036
-        exc_val: "BaseException | None",  # noqa: PYI036
-        exc_tb: TracebackType | None,
+        self, exc_type: "type[BaseException] | None", exc_val: "BaseException | None", exc_tb: TracebackType | None
     ) -> "None":
         self.calls.append(("exit", (exc_type, exc_val, exc_tb)))
 

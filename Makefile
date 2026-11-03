@@ -21,6 +21,7 @@ EXAMPLE_ASSETS_APP := examples.htmx_realtime_sse.app:app
 ifneq ($(shell grep -s -q "rodete" /etc/os-release && echo "yes"),)
 export PIP_INDEX_URL=https://pypi.org/simple
 export UV_INDEX_URL=https://pypi.org/simple
+export UV_DEFAULT_INDEX=https://pypi.org/simple
 endif
 
 # -----------------------------------------------------------------------------
@@ -109,7 +110,7 @@ destroy:                                            ## Destroy virtual environme
 # =============================================================================
 
 .PHONY: upgrade
-upgrade:                                            ## Upgrade all dependencies to latest stable versions
+upgrade: setup-env                                  ## Upgrade all dependencies to latest stable versions
 	@echo "${INFO} Updating all dependencies... 🔄"
 	@uv lock --upgrade
 	@echo "${OK} Dependencies updated 🔄"
@@ -118,7 +119,7 @@ upgrade:                                            ## Upgrade all dependencies 
 	@uv lock >/dev/null 2>&1
 
 .PHONY: lock
-lock:                                               ## Rebuild lockfiles from scratch
+lock: setup-env                                     ## Rebuild lockfiles from scratch
 	@echo "${INFO} Rebuilding lockfiles... 🔄"
 	@uv lock --upgrade >/dev/null 2>&1
 	@echo "${OK} Lockfiles updated 🔄"
@@ -134,7 +135,7 @@ build:                                              ## Build the project
 	@echo "${OK} Package build complete 📦"
 
 .PHONY: release
-release:                                           ## Bump version and create release artifacts
+release: setup-env                                 ## Bump version and create release artifacts
 	@echo "${INFO} Preparing for release... 📦"
 	@make docs
 	@make clean

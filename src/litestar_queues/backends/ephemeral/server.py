@@ -99,9 +99,9 @@ class EphemeralServerContext:
 
     def __exit__(
         self,
-        exc_type: "type[BaseException] | None",  # noqa: PYI036
-        exc_value: "BaseException | None",  # noqa: PYI036
-        traceback: "TracebackType | None",  # noqa: PYI036
+        exc_type: "type[BaseException] | None",
+        exc_value: "BaseException | None",
+        traceback: "TracebackType | None",
     ) -> "None":
         """Remove the environment, database files, and private directory."""
         del exc_type, exc_value, traceback

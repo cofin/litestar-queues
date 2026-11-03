@@ -77,10 +77,7 @@ class _ExternalProducer:
         return self._producer
 
     async def __aexit__(
-        self,
-        exc_type: "type[BaseException] | None",  # noqa: PYI036
-        exc_val: "BaseException | None",  # noqa: PYI036
-        exc_tb: "TracebackType | None",  # noqa: PYI036
+        self, exc_type: "type[BaseException] | None", exc_val: "BaseException | None", exc_tb: "TracebackType | None"
     ) -> "None":
         await self._close(primary=exc_val)
 
