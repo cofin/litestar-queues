@@ -42,6 +42,8 @@ async def record_process(token: str) -> "int":
 
 
 async def mark_web_process() -> "None":
+    if os.environ.get(PROCESS_ROLE_ENV_VAR) == "server-worker":
+        return
     _write_marker("web", ephemeral_path=os.environ.get(EPHEMERAL_PATH_ENV_VAR))
 
 
