@@ -17,6 +17,7 @@ __all__ = (
     "QueuedTaskRecord",
     "ScheduleAssertionResult",
     "StaleTaskRecoveryResult",
+    "TaskListPage",
     "TaskRequest",
     "TaskReservation",
     "TaskStatus",
@@ -162,6 +163,28 @@ class StaleTaskRecoveryResult:
             "skipped": self.skipped,
             "handler_needed": self.handler_needed,
         }
+
+
+@dataclass(slots=True)
+class TaskListPage:
+    """Paginated slice of queued task records matching a listing query."""
+
+    items: "list[QueuedTaskRecord]"
+    """Ordered task records for the requested slice (newest first)."""
+
+    limit: "int"
+    """Maximum page size requested (>= 1)."""
+
+    offset: "int"
+    """Zero-based starting record offset (>= 0)."""
+
+    total: "int"
+    """Total number of matching task records across all pages."""
+
+    @property
+    def has_more(self) -> "bool":
+        """Whether additional matching records exist past this page."""
+        return (self.offset + len(self.items)) < self.total
 
 
 @dataclass(frozen=True, slots=True)

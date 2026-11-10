@@ -2,10 +2,11 @@
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast, get_args
 from uuid import uuid4
 
 from litestar_queues.config import STALE_REQUEUE_PRIORITY, queue_backend_name
@@ -15,32 +16,38 @@ from litestar_queues.models import (
     QueueBackendCapabilities,
     QueueStatistics,
     StaleTaskRecoveryResult,
+    TaskStatus,
 )
 from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Collection, Mapping
     from types import TracebackType
     from uuid import UUID
 
     from litestar_queues.config import QueueConfig, StaleRequeuePriority
     from litestar_queues.events import EventHistoryConfig, QueueEventLog
-    from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest, TaskReservation
+    from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskListPage, TaskRequest, TaskReservation
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = (
     "EXTERNAL_DISPATCH_RESERVATION_PREFIX",
     "STALE_REQUEUE_PRIORITY",
+    "VALID_TASK_STATUSES",
     "BaseQueueBackend",
     "DispatchRepairCandidates",
     "attempts_consumed",
     "interruption_count",
     "is_external_dispatch_reservation",
+    "normalize_task_list_query",
+    "normalize_task_statuses",
     "retry_schedule",
+    "validate_task_list_pagination",
 )
 
 EXTERNAL_DISPATCH_RESERVATION_PREFIX = "__litestar_queues_dispatching__:"
 STALE_HEARTBEAT_ERROR = "Task heartbeat stale"
+VALID_TASK_STATUSES: "frozenset[str]" = frozenset(get_args(TaskStatus))
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +253,24 @@ class BaseQueueBackend:
         """Return existing records for the supplied identifiers."""
         records = await asyncio.gather(*(self.get_task(task_id) for task_id in task_ids))
         return [record for record in records if record is not None]
+
+    async def list_tasks(
+        self,
+        *,
+        status: "TaskStatus | Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+        limit: "int" = 50,
+        offset: "int" = 0,
+    ) -> "TaskListPage":
+        """Return a paginated slice of task records matching optional filters.
+
+        Raises:
+            NotImplementedError: Always; every concrete backend must implement this.
+        """
+        del status, queue, task_name, key, limit, offset
+        raise NotImplementedError
 
     async def notify_worker_control(self, worker_id: "str | None") -> "None":
         """Publish a best-effort worker-control hint.
@@ -898,18 +923,82 @@ def is_external_dispatch_reservation(execution_ref: "str | None") -> "bool":
     return execution_ref is not None and execution_ref.startswith(EXTERNAL_DISPATCH_RESERVATION_PREFIX)
 
 
+def validate_task_list_pagination(*, limit: "int" = 50, offset: "int" = 0) -> "tuple[int, int]":
+    """Validate and return bounded ``(limit, offset)`` pagination arguments.
+
+    Raises:
+        QueueConfigurationError: When ``limit`` is not a positive integer or
+            ``offset`` is not a non-negative integer.
+    """
+    raw_limit: "object" = limit
+    if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or raw_limit < 1:
+        msg = f"Task list limit must be an integer >= 1; got {limit!r}."
+        raise QueueConfigurationError(msg)
+    raw_offset: "object" = offset
+    if isinstance(raw_offset, bool) or not isinstance(raw_offset, int) or raw_offset < 0:
+        msg = f"Task list offset must be an integer >= 0; got {offset!r}."
+        raise QueueConfigurationError(msg)
+    return raw_limit, raw_offset
+
+
+def normalize_task_statuses(status: "TaskStatus | Sequence[TaskStatus] | None") -> "tuple[TaskStatus, ...] | None":
+    """Validate and normalize a single status, status sequence, or ``None``.
+
+    Raises:
+        QueueConfigurationError: When ``status`` is not ``None``, a valid
+            ``TaskStatus`` string, or a sequence of valid ``TaskStatus`` strings.
+    """
+    raw_status: "object" = status
+    if raw_status is None:
+        return None
+    if isinstance(raw_status, str):
+        if raw_status not in VALID_TASK_STATUSES:
+            msg = f"Invalid task status {raw_status!r}; expected one of {sorted(VALID_TASK_STATUSES)}."
+            raise QueueConfigurationError(msg)
+        return (cast("TaskStatus", raw_status),)
+    if isinstance(raw_status, (bytes, bytearray, memoryview)) or not isinstance(raw_status, Sequence):
+        msg = f"Task status filter must be a status string, sequence of statuses, or None; got {status!r}."
+        raise QueueConfigurationError(msg)
+    normalized: "list[TaskStatus]" = []
+    seen: "set[str]" = set()
+    for item in raw_status:
+        raw_item: "object" = item
+        if not isinstance(raw_item, str) or raw_item not in VALID_TASK_STATUSES:
+            msg = f"Invalid task status {raw_item!r}; expected one of {sorted(VALID_TASK_STATUSES)}."
+            raise QueueConfigurationError(msg)
+        if raw_item not in seen:
+            seen.add(raw_item)
+            normalized.append(cast("TaskStatus", raw_item))
+    return tuple(normalized)
+
+
+def normalize_task_list_query(
+    *, status: "TaskStatus | Sequence[TaskStatus] | None" = None, limit: "int" = 50, offset: "int" = 0
+) -> "tuple[tuple[TaskStatus, ...] | None, int, int]":
+    """Validate pagination bounds and normalize ``status`` into deduplicated status tuples or ``None``."""
+    validated_limit, validated_offset = validate_task_list_pagination(limit=limit, offset=offset)
+    normalized_statuses = normalize_task_statuses(status)
+    return normalized_statuses, validated_limit, validated_offset
+
+
 def record_matches_filters(
     record: "QueuedTaskRecord",
     *,
+    statuses: "Collection[TaskStatus] | None" = None,
     task_name: "str | None" = None,
     queue: "str | None" = None,
+    key: "str | None" = None,
     kwargs: "Mapping[str, Any] | None" = None,
     metadata: "Mapping[str, Any] | None" = None,
 ) -> "bool":
-    """Return whether `record` matches all supplied task, queue, kwargs, and metadata filters."""
+    """Return whether `record` matches all supplied status, task, queue, key, kwargs, and metadata filters."""
+    if statuses is not None and record.status not in statuses:
+        return False
     if task_name is not None and record.task_name != task_name:
         return False
     if queue is not None and record.queue != queue:
+        return False
+    if key is not None and record.key != key:
         return False
     if kwargs is not None and not _contains_items(record.kwargs, kwargs):
         return False
