@@ -12,6 +12,7 @@ from litestar_queues.backends.base import (
     attempts_consumed,
     interruption_count,
     is_external_dispatch_reservation,
+    normalize_task_list_query,
     record_matches_filters,
     retry_schedule,
     stale_requeue_error,
@@ -25,6 +26,7 @@ from litestar_queues.models import (
     QueuedTaskRecord,
     QueueStatistics,
     StaleTaskRecoveryResult,
+    TaskListPage,
     TaskReservation,
 )
 
@@ -34,7 +36,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventHistoryConfig, QueueEventLog
-    from litestar_queues.models import HeartbeatTouch, TaskRequest
+    from litestar_queues.models import HeartbeatTouch, TaskRequest, TaskStatus
 
 __all__ = ("InMemoryQueueBackend",)
 
@@ -204,6 +206,35 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def get_tasks(self, task_ids: "Sequence[UUID]") -> "list[QueuedTaskRecord]":
         """Return existing queued task records matching ``task_ids``."""
         return [record for task_id in task_ids if (record := self._records.get(task_id)) is not None]
+
+    async def list_tasks(
+        self,
+        *,
+        status: "TaskStatus | Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+        limit: "int" = 50,
+        offset: "int" = 0,
+    ) -> "TaskListPage":
+        """Return a paginated slice of in-memory task records ordered newest first.
+
+        Raises:
+            QueueConfigurationError: If ``status``, ``limit``, or ``offset`` is invalid.
+        """
+        statuses, resolved_limit, resolved_offset = normalize_task_list_query(status=status, limit=limit, offset=offset)
+        if statuses == ():
+            return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=0)
+        status_set = set(statuses) if statuses is not None else None
+        async with self._lock:
+            matched = [
+                record
+                for record in self._records.values()
+                if record_matches_filters(record, statuses=status_set, queue=queue, task_name=task_name, key=key)
+            ]
+        matched.sort(key=lambda record: (record.created_at, str(record.id)), reverse=True)
+        page_items = matched[resolved_offset : resolved_offset + resolved_limit]
+        return TaskListPage(items=page_items, limit=resolved_limit, offset=resolved_offset, total=len(matched))
 
     async def notify_worker_control(self, worker_id: "str | None") -> "None":
         """Signal in-process worker control waiters."""
