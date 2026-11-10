@@ -22,6 +22,7 @@ from litestar_queues.backends.base import (
     attempts_consumed,
     interruption_count,
     is_external_dispatch_reservation,
+    normalize_task_list_query,
     record_matches_filters,
     retry_schedule,
     stale_requeue_error,
@@ -44,6 +45,7 @@ from litestar_queues.models import (
     QueuedTaskRecord,
     QueueStatistics,
     StaleTaskRecoveryResult,
+    TaskListPage,
     TaskReservation,
 )
 
@@ -53,7 +55,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventHistoryConfig, QueueEventLog
-    from litestar_queues.models import HeartbeatTouch, TaskRequest
+    from litestar_queues.models import HeartbeatTouch, TaskRequest, TaskStatus
 
 __all__ = ("EphemeralQueueBackend",)
 
@@ -423,6 +425,72 @@ class EphemeralQueueBackend(BaseQueueBackend):
                 "SELECT payload FROM queue_task WHERE task_key = ? ORDER BY created_at DESC, id DESC LIMIT 1", (key,)
             ).fetchone()
             return None if row is None else _decode(row)
+
+        return await self._run(operation)
+
+    async def list_tasks(
+        self,
+        *,
+        status: "TaskStatus | Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+        limit: "int" = 50,
+        offset: "int" = 0,
+    ) -> "TaskListPage":
+        """Return a paginated slice of SQLite task records ordered newest first.
+
+        Returns:
+            Paginated task records and total matching count.
+
+        Raises:
+            QueueConfigurationError: If ``status``, ``limit``, or ``offset`` is invalid
+                or the backend is not open.
+        """
+        statuses, resolved_limit, resolved_offset = normalize_task_list_query(status=status, limit=limit, offset=offset)
+        if statuses == ():
+            return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=0)
+        clauses: "list[str]" = []
+        values: "list[Any]" = []
+        if statuses is not None:
+            if len(statuses) == 1:
+                clauses.append("status = ?")
+                values.append(statuses[0])
+            else:
+                placeholders = ",".join("?" * len(statuses))
+                clauses.append(f"status IN ({placeholders})")
+                values.extend(statuses)
+        if queue is not None:
+            clauses.append("queue = ?")
+            values.append(queue)
+        if task_name is not None:
+            clauses.append("task_name = ?")
+            values.append(task_name)
+        if key is not None:
+            clauses.append("task_key = ?")
+            values.append(key)
+        where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        count_sql = f"SELECT COUNT(*) AS total FROM queue_task{where_sql}"  # noqa: S608
+        page_sql = (
+            f"SELECT payload FROM queue_task{where_sql} "  # noqa: S608
+            "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        )
+        page_values = [*values, resolved_limit, resolved_offset]
+
+        def operation(connection: "sqlite3.Connection") -> "TaskListPage":
+            connection.execute("BEGIN")
+            try:
+                total_row = connection.execute(count_sql, values).fetchone()
+                total = int(total_row["total"]) if total_row is not None else 0
+                if total == 0 or resolved_offset >= total:
+                    connection.execute("COMMIT")
+                    return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=total)
+                rows = connection.execute(page_sql, page_values).fetchall()
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+            return TaskListPage(items=_decode_all(rows), limit=resolved_limit, offset=resolved_offset, total=total)
 
         return await self._run(operation)
 
