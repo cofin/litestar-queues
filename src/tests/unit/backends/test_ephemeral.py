@@ -5,10 +5,11 @@ import os
 import sqlite3
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -16,19 +17,25 @@ from litestar_queues import QueueConfig, WorkerConfig
 from litestar_queues.backends.ephemeral import NONCE_ENV_VAR, EphemeralQueueBackend
 from litestar_queues.backends.ephemeral import backend as ephemeral_backend_module
 from litestar_queues.backends.ephemeral.codec import MAGIC, encode_payload, record_from_payload, record_to_payload
-from litestar_queues.backends.ephemeral.schema import EphemeralDatabaseError
+from litestar_queues.backends.ephemeral.schema import (
+    SCHEMA_VERSION,
+    EphemeralDatabaseError,
+    connect,
+    initialize_database,
+)
 from litestar_queues.backends.ephemeral.server import EphemeralServerContext
 from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventActor
 from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest
+from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskListPage, TaskRequest
 from tests.helpers._timing import MutableClock
 from tests.integration._expiry_contract import assert_claim_many_preserves_expired_dispatch_reservation
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
+    from collections.abc import AsyncIterator, Iterator, Sequence
 
     from litestar_queues.events import QueueEventLog
+    from litestar_queues.models import TaskStatus
 
 pytestmark = pytest.mark.anyio
 
@@ -979,3 +986,267 @@ def test_dispatch_checked_at_codec_round_trip() -> "None":
     assert restored.dispatch_checked_at == stamp.astimezone(UTC)
     assert restored.dispatch_checked_at is not None
     assert restored.dispatch_checked_at.tzinfo == UTC
+
+
+async def _seed_listing_records(
+    backend: "EphemeralQueueBackend", clock: "MutableClock"
+) -> "tuple[QueuedTaskRecord, QueuedTaskRecord, QueuedTaskRecord, QueuedTaskRecord, QueuedTaskRecord]":
+    r1 = await backend.enqueue("tasks.send", queue="emails", key="k-1")
+    await backend.claim_task(r1.id)
+    completed = await backend.complete_task(r1.id, result={"ok": True})
+    assert completed is not None
+    clock.advance(timedelta(seconds=1))
+
+    r2 = await backend.enqueue("tasks.render", queue="reports", key="k-2")
+    clock.advance(timedelta(seconds=1))
+
+    r3 = await backend.enqueue("tasks.send", queue="emails", key="k-3")
+    await backend.claim_task(r3.id)
+    failed = await backend.fail_task(r3.id, "boom", retry=False)
+    assert failed is not None
+    clock.advance(timedelta(seconds=1))
+
+    r4 = await backend.enqueue("tasks.send", queue="emails", scheduled_at=clock() + timedelta(hours=1), key="k-4")
+    clock.advance(timedelta(seconds=1))
+
+    r5 = await backend.enqueue("tasks.audit", queue="emails", key="k-1")
+    running = await backend.claim_task(r5.id)
+    assert running is not None
+    return completed, r2, failed, r4, running
+
+
+def test_ephemeral_schema_creates_listing_indexes(tmp_path: "Path") -> "None":
+    assert SCHEMA_VERSION == 6
+    with EphemeralServerContext(nonce="nonce-listing-indexes") as context:
+        connection = connect(context.path, create=False)
+        try:
+            index_names = {
+                str(row["name"])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'queue_task'"
+                ).fetchall()
+            }
+            created_cols = [
+                str(row["name"]) for row in connection.execute("PRAGMA index_info('ix_queue_task_created')")
+            ]
+            list_cols = [str(row["name"]) for row in connection.execute("PRAGMA index_info('ix_queue_task_list')")]
+        finally:
+            connection.close()
+
+    assert {"ix_queue_task_created", "ix_queue_task_list"} <= index_names
+    assert created_cols == ["created_at", "id"]
+    assert list_cols == ["status", "queue", "created_at", "id"]
+
+    upgrade_path = tmp_path / "upgrade_v5.sqlite3"
+    conn = connect(upgrade_path, create=True)
+    try:
+        conn.execute("CREATE TABLE queue_runtime (singleton INTEGER, schema_version INTEGER, invocation_nonce TEXT)")
+        conn.execute("INSERT INTO queue_runtime VALUES (1, 5, 'old-v5')")
+        conn.execute("CREATE TABLE queue_task (id TEXT)")
+    finally:
+        conn.close()
+
+    initialize_database(upgrade_path, nonce="v6-nonce")
+    upgraded = connect(upgrade_path, create=False)
+    try:
+        upgraded_indexes = {
+            str(row["name"])
+            for row in upgraded.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'queue_task'"
+            ).fetchall()
+        }
+    finally:
+        upgraded.close()
+    assert {"ix_queue_task_created", "ix_queue_task_list"} <= upgraded_indexes
+
+
+@dataclass(frozen=True, slots=True)
+class _ListCase:
+    status: "TaskStatus | Sequence[TaskStatus] | None" = None
+    queue: "str | None" = None
+    task_name: "str | None" = None
+    key: "str | None" = None
+    limit: "int" = 50
+    offset: "int" = 0
+    expected_indices: "tuple[int, ...]" = ()
+    expected_total: "int" = 0
+    expected_has_more: "bool" = False
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        _ListCase(
+            status=("completed", "failed"),
+            queue="emails",
+            limit=1,
+            offset=1,
+            expected_indices=(0,),
+            expected_total=2,
+            expected_has_more=False,
+        ),
+        _ListCase(
+            status=["failed", "completed", "failed"],
+            queue="emails",
+            limit=1,
+            offset=0,
+            expected_indices=(2,),
+            expected_total=2,
+            expected_has_more=True,
+        ),
+        _ListCase(status="pending", expected_indices=(1,), expected_total=1, expected_has_more=False),
+        _ListCase(
+            queue="emails",
+            task_name="tasks.send",
+            expected_indices=(3, 2, 0),
+            expected_total=3,
+            expected_has_more=False,
+        ),
+        _ListCase(key="k-1", expected_indices=(4, 0), expected_total=2, expected_has_more=False),
+        _ListCase(limit=2, offset=0, expected_indices=(4, 3), expected_total=5, expected_has_more=True),
+        _ListCase(limit=2, offset=2, expected_indices=(2, 1), expected_total=5, expected_has_more=True),
+        _ListCase(limit=2, offset=4, expected_indices=(0,), expected_total=5, expected_has_more=False),
+        _ListCase(limit=2, offset=5, expected_indices=(), expected_total=5, expected_has_more=False),
+        _ListCase(queue="missing", expected_indices=(), expected_total=0, expected_has_more=False),
+    ],
+)
+async def test_list_tasks_filters_and_paginates(
+    backend: "EphemeralQueueBackend", monkeypatch: "pytest.MonkeyPatch", case: "_ListCase"
+) -> "None":
+    clock = MutableClock()
+    monkeypatch.setattr(ephemeral_backend_module, "_utc_now", clock)
+    seeded = await _seed_listing_records(backend, clock)
+
+    page = await backend.list_tasks(
+        status=case.status,
+        queue=case.queue,
+        task_name=case.task_name,
+        key=case.key,
+        limit=case.limit,
+        offset=case.offset,
+    )
+
+    assert [record.id for record in page.items] == [seeded[index].id for index in case.expected_indices]
+    assert page.limit == case.limit
+    assert page.offset == case.offset
+    assert page.total == case.expected_total
+    assert page.has_more is case.expected_has_more
+
+
+async def test_list_tasks_breaks_equal_timestamp_ties_by_id_desc(
+    backend: "EphemeralQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    clock = MutableClock()
+    monkeypatch.setattr(ephemeral_backend_module, "_utc_now", clock)
+    await backend.enqueue("tasks.tie", id=UUID(int=2))
+    await backend.enqueue("tasks.tie", id=UUID(int=1))
+    await backend.enqueue("tasks.tie", id=UUID(int=3))
+
+    page_one = await backend.list_tasks(limit=2, offset=0)
+    page_two = await backend.list_tasks(limit=2, offset=2)
+
+    assert [record.id for record in page_one.items] == [UUID(int=3), UUID(int=2)]
+    assert page_one.total == 3
+    assert page_one.has_more is True
+    assert [record.id for record in page_two.items] == [UUID(int=1)]
+    assert page_two.total == 3
+    assert page_two.has_more is False
+
+
+async def test_list_tasks_hydrates_only_the_requested_page_slice(
+    backend: "EphemeralQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    await backend.enqueue_many([TaskRequest(task_name="tasks.slice")] * 5)
+    decoded: "list[sqlite3.Row]" = []
+    original_decode = ephemeral_backend_module._decode
+
+    def count_decodes(row: "sqlite3.Row") -> "QueuedTaskRecord":
+        decoded.append(row)
+        return original_decode(row)
+
+    monkeypatch.setattr(ephemeral_backend_module, "_decode", count_decodes)
+
+    page = await backend.list_tasks(limit=2, offset=1)
+    assert len(page.items) == 2
+    assert page.total == 5
+    assert page.has_more is True
+    assert len(decoded) == 2
+
+    decoded.clear()
+    past_end = await backend.list_tasks(limit=2, offset=10)
+    assert past_end.items == []
+    assert past_end.total == 5
+    assert past_end.has_more is False
+    assert len(decoded) == 0
+
+    no_match = await backend.list_tasks(queue="empty")
+    assert no_match.items == []
+    assert no_match.total == 0
+    assert no_match.has_more is False
+    assert len(decoded) == 0
+
+
+@pytest.mark.parametrize("empty_status", [(), []])
+async def test_list_tasks_empty_status_short_circuits_without_opening(empty_status: "Sequence[TaskStatus]") -> "None":
+    unopened = EphemeralQueueBackend(QueueConfig(queue_backend="ephemeral"))
+
+    page = await unopened.list_tasks(status=empty_status, limit=10, offset=3)
+
+    assert page == TaskListPage(items=[], limit=10, offset=3, total=0)
+    assert page.has_more is False
+
+
+@pytest.mark.parametrize(
+    ("status", "limit", "offset"),
+    [
+        (None, 0, 0),
+        (None, -1, 0),
+        (None, True, 0),
+        (None, 10, -1),
+        (None, 10, False),
+        ("bogus", 10, 0),
+        (["pending", "bogus"], 10, 0),
+        (b"pending", 10, 0),
+        (123, 10, 0),
+        ((), 0, 0),
+        ((), 10, -1),
+    ],
+)
+async def test_list_tasks_rejects_invalid_query_before_opening(
+    status: "object", limit: "object", offset: "object"
+) -> "None":
+    unopened = EphemeralQueueBackend(QueueConfig(queue_backend="ephemeral"))
+
+    with pytest.raises(QueueConfigurationError):
+        await unopened.list_tasks(status=status, limit=limit, offset=offset)  # type: ignore[arg-type]
+
+
+async def test_list_tasks_requires_open_backend() -> "None":
+    unopened = EphemeralQueueBackend(QueueConfig(queue_backend="ephemeral"))
+
+    with pytest.raises(QueueConfigurationError, match="litestar run"):
+        await unopened.list_tasks()
+
+
+async def test_list_tasks_raises_database_error_without_leaking_path_when_deleted(
+    backend: "EphemeralQueueBackend",
+) -> "None":
+    await backend.enqueue("tasks.missing")
+    _delete_database(backend.path)
+
+    with pytest.raises(EphemeralDatabaseError, match="no longer available") as caught:
+        await backend.list_tasks()
+
+    assert backend.path not in str(caught.value)
+
+
+async def test_list_tasks_raises_database_error_without_leaking_path_on_corrupt_payload(
+    backend: "EphemeralQueueBackend",
+) -> "None":
+    record = await backend.enqueue("tasks.corrupt")
+    _write_raw_payload(backend.path, record.id, b"corrupt-payload")
+
+    with pytest.raises(EphemeralDatabaseError, match="unreadable") as caught:
+        await backend.list_tasks()
+
+    assert backend.path not in str(caught.value)
