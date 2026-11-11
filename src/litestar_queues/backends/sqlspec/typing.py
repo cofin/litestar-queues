@@ -8,6 +8,7 @@ matching a concrete adapter.
 
 from litestar_queues.backends.sqlspec._typing import (
     DatetimeParam,
+    ExtensionMigrationMode,
     SQLSpecConfig,
     SQLSpecDriver,
     SQLSpecManager,
@@ -17,6 +18,7 @@ from litestar_queues.backends.sqlspec._typing import (
 
 __all__ = (
     "DatetimeParam",
+    "ExtensionMigrationMode",
     "SQLSpecConfig",
     "SQLSpecDriver",
     "SQLSpecManager",

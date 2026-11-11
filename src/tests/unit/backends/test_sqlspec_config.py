@@ -1,4 +1,5 @@
-from typing import TYPE_CHECKING, Any, cast
+import inspect
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 import pytest
 
@@ -7,6 +8,7 @@ pytest.importorskip("sqlspec")
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend, SQLSpecWorkerWakeupConfig
+from litestar_queues.backends.sqlspec import typing as sqlspec_typing
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.models import QueuedTaskRecord
 
@@ -449,3 +451,36 @@ async def test_migration_registration_toggle_preserves_adopter_options_and_histo
                 assert await driver.select("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name") == tables
     finally:
         await config.close_pool()
+
+
+@pytest.mark.parametrize(
+    ("symbol_name", "expected_literal_args"), [("ExtensionMigrationMode", ("versioned", "reconcile"))]
+)
+def test_sqlspec_typing_facade_exports_extension_migration_mode(
+    symbol_name: str, expected_literal_args: tuple[str, ...]
+) -> None:
+    """The SQLSpec typing facade exposes ExtensionMigrationMode with versioned and reconcile literals."""
+    assert symbol_name in sqlspec_typing.__all__
+    assert get_args(getattr(sqlspec_typing, symbol_name)) == expected_literal_args
+
+
+@pytest.mark.parametrize(
+    ("param_name", "expected_kind", "expected_default", "expected_annotation"),
+    [
+        ("name", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.empty, str),
+        ("migrations_path", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.empty, "str | Path"),
+        ("settings", inspect.Parameter.POSITIONAL_OR_KEYWORD, None, "dict[str, Any] | None"),
+        ("migration_mode", inspect.Parameter.KEYWORD_ONLY, None, "ExtensionMigrationMode | None"),
+    ],
+)
+def test_sqlspec_config_protocol_add_extension_migrations_signature(
+    param_name: str, expected_kind: Any, expected_default: Any, expected_annotation: Any
+) -> None:
+    """SQLSpecConfig.add_extension_migrations accepts keyword-only migration_mode."""
+    params = inspect.signature(sqlspec_typing.SQLSpecConfig.add_extension_migrations).parameters
+
+    assert param_name in params
+    parameter = params[param_name]
+    assert parameter.kind is expected_kind
+    assert parameter.default is expected_default
+    assert parameter.annotation == expected_annotation
