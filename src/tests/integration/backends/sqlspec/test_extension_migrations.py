@@ -12,18 +12,23 @@ pytest.importorskip("sqlspec")
 
 from datetime import UTC
 from unittest.mock import MagicMock
+from uuid import UUID
 
 from sqlspec import SQLSpec
 from sqlspec.adapters.sqlite import SqliteConfig
 from sqlspec.exceptions import MigrationError
 from sqlspec.migrations.context import MigrationContext
+from sqlspec.migrations.schema import SchemaTarget
 
 from litestar_queues import WorkerConfig
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend, SQLSpecWorkerWakeupConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
 from litestar_queues.backends.sqlspec.migrations.reconcile import (
     down,
     downgrade,
     reconcile,
+    reconcile_events_queue_async,
+    reconcile_events_queue_sync,
     reconcile_stores_async,
     reconcile_stores_sync,
 )
@@ -866,3 +871,339 @@ async def test_reconcile_raises_migration_error_on_foreign_table_index_collision
             driver.rollback()
     finally:
         await manager.close_all_pools()
+
+
+_EVENT_QUEUE_RECONCILE_DDL = (
+    "CREATE TABLE IF NOT EXISTS sqlspec_event_queue ("
+    "event_id VARCHAR(64) PRIMARY KEY, "
+    "channel VARCHAR(128) NOT NULL, "
+    "payload_json TEXT NOT NULL, "
+    "metadata_json TEXT, "
+    "status VARCHAR(32) NOT NULL DEFAULT 'pending', "
+    "available_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+    "lease_expires_at TIMESTAMP, "
+    "attempts INTEGER NOT NULL DEFAULT 0, "
+    "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+    "acknowledged_at TIMESTAMP"
+    ")"
+)
+
+
+class _RecordingEventQueueStore:
+    """Custom events queue store double exercising _schema_management_flags()."""
+
+    def __init__(self, flags: "tuple[bool, bool]") -> "None":
+        self._flags = flags
+        self.calls: "list[tuple[Any, ...]]" = []
+
+    def _schema_management_flags(self) -> "tuple[bool, bool]":
+        return self._flags
+
+    def prepare_schema_sync(self, driver: "Any") -> "None":
+        self.calls.append(("prepare", driver))
+
+    async def prepare_schema_async(self, driver: "Any") -> "None":
+        self.calls.append(("prepare", driver))
+
+    def get_schema_targets(self) -> "list[SchemaTarget]":
+        self.calls.append(("targets",))
+        return [SchemaTarget.from_ddl("sqlspec_event_queue", _EVENT_QUEUE_RECONCILE_DDL, dialect="sqlite")]
+
+    def reconcile_companion_objects_sync(self, driver: "Any") -> "None":
+        self.calls.append(("companions", driver))
+
+    async def reconcile_companion_objects_async(self, driver: "Any") -> "None":
+        self.calls.append(("companions", driver))
+
+    def native_backend_targets(self, backend_name: "str") -> "tuple[str, ...]":
+        self.calls.append(("native_targets", backend_name))
+        return ("native_queue_obj",)
+
+    def reconcile_native_backend_sync(
+        self, driver: "Any", backend_name: "str", targets: "tuple[str, ...]", *, create_schema: "bool"
+    ) -> "None":
+        self.calls.append(("native", backend_name, targets, create_schema))
+
+    async def reconcile_native_backend_async(
+        self, driver: "Any", backend_name: "str", targets: "tuple[str, ...]", *, create_schema: "bool"
+    ) -> "None":
+        self.calls.append(("native", backend_name, targets, create_schema))
+
+
+class _FallbackEventQueueStore:
+    """Custom events queue store double lacking get_schema_targets."""
+
+    def __init__(self, flags: "tuple[bool, bool]") -> "None":
+        self._flags = flags
+
+    def _schema_management_flags(self) -> "tuple[bool, bool]":
+        return self._flags
+
+    def create_statements(self) -> "list[str]":
+        return [_EVENT_QUEUE_RECONCILE_DDL]
+
+
+def _seed_legacy_queue_task(db_path: "Path", sqlspec_config: "Any", task_id: "UUID", task_name: "str") -> "None":
+    initial_store = create_queue_store(sqlspec_config, manage_schema=True)
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        connection.executescript(initial_store._create_initial_table_sql())
+        connection.execute('CREATE INDEX "ix_queue_task_heartbeat" ON "queue_task"("status", "heartbeat_at")')
+        connection.execute(
+            """
+            INSERT INTO queue_task (
+                id, task_name, task_args, task_kwargs, queue, execution_backend,
+                status, priority, max_retries, retry_count, created_at, queued_at, result, metadata
+            ) VALUES (?, ?, '[]', '{}', 'default', 'local', 'pending', 0, 1, 0,
+                      '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', 'null', '{}')
+            """,
+            (str(task_id), task_name),
+        )
+        connection.commit()
+
+
+def _seed_legacy_events_queue(db_path: "Path") -> "None":
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            """
+            CREATE TABLE sqlspec_event_queue (
+                event_id VARCHAR(64) PRIMARY KEY,
+                channel VARCHAR(128) NOT NULL,
+                payload_json TEXT NOT NULL,
+                metadata_json TEXT,
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                available_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                lease_expires_at TIMESTAMP,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO sqlspec_event_queue (event_id, channel, payload_json) VALUES ('evt-1', 'default', '{}')"
+        )
+        connection.commit()
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+async def test_backend_create_schema_reconcile_converges_sync_and_async(tmp_path: "Path", is_async: "bool") -> "None":
+    if is_async:
+        pytest.importorskip("aiosqlite")
+    db_path = tmp_path / "backend_reconcile.db"
+    config_cls: Any = _AiosqliteConfig if is_async else SqliteConfig
+    sqlspec_config = config_cls(connection_config={"database": str(db_path)})
+    existing_id = UUID("00000000-0000-0000-0000-000000000042")
+    _seed_legacy_queue_task(db_path, sqlspec_config, existing_id, "tasks.legacy")
+
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=sqlspec_config, migration_mode="reconcile", worker_wakeups=None
+        )
+    )
+    await backend.open()
+    try:
+        await backend.create_schema()
+        await backend.create_schema()
+        preserved = await backend.get_task(existing_id)
+        assert preserved is not None
+        assert preserved.task_name == "tasks.legacy"
+    finally:
+        await backend.close()
+
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(queue_task)").fetchall()}
+        indexes = {
+            row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+        }
+        tables = {
+            row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+    assert "expires_at" in columns
+    assert {"ix_queue_task_dispatch_repair", "ix_queue_task_pending", "ix_queue_task_heartbeat"}.issubset(indexes)
+    assert {"queue_task", "queue_maintenance", "queue_task_reservation"}.issubset(tables)
+
+
+async def test_backend_create_schema_versioned_keeps_direct_ddl(tmp_path: "Path") -> "None":
+    db_path = tmp_path / "backend_versioned.db"
+    sqlspec_config = SqliteConfig(connection_config={"database": str(db_path)})
+    existing_id = UUID("00000000-0000-0000-0000-000000000043")
+    _seed_legacy_queue_task(db_path, sqlspec_config, existing_id, "tasks.versioned")
+
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=sqlspec_config, migration_mode="versioned", worker_wakeups=None
+        )
+    )
+    await backend.open()
+    try:
+        await backend.create_schema()
+    finally:
+        await backend.close()
+
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(queue_task)").fetchall()}
+        row = connection.execute("SELECT task_name FROM queue_task WHERE id = ?", (str(existing_id),)).fetchone()
+    assert "expires_at" not in columns
+    assert row == ("tasks.versioned",)
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("precreate_legacy_events", [False, True])
+async def test_backend_create_schema_reconciles_events_queue_when_enabled(
+    tmp_path: "Path", is_async: "bool", precreate_legacy_events: "bool"
+) -> "None":
+    if is_async:
+        pytest.importorskip("aiosqlite")
+    db_path = tmp_path / "backend_events_reconcile.db"
+    if precreate_legacy_events:
+        _seed_legacy_events_queue(db_path)
+
+    config_cls: Any = _AiosqliteConfig if is_async else SqliteConfig
+    sqlspec_config = config_cls(connection_config={"database": str(db_path)})
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=sqlspec_config,
+            migration_mode="reconcile",
+            worker_wakeups=SQLSpecWorkerWakeupConfig(transport="poll_queue"),
+        )
+    )
+    await backend.open()
+    try:
+        await backend.create_schema()
+    finally:
+        await backend.close()
+
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        tables = {
+            row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+        event_columns = {row[1] for row in connection.execute("PRAGMA table_info(sqlspec_event_queue)").fetchall()}
+        indexes = {
+            row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+        }
+        rows = connection.execute("SELECT event_id FROM sqlspec_event_queue").fetchall()
+    assert {"queue_task", "queue_maintenance", "queue_task_reservation", "sqlspec_event_queue"}.issubset(tables)
+    assert "acknowledged_at" in event_columns
+    assert "idx_sqlspec_event_queue_channel_status" in indexes
+    if precreate_legacy_events:
+        assert rows == [("evt-1",)]
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("flags", [(False, True), (True, False)])
+async def test_reconcile_events_queue_honors_schema_management_flags(
+    tmp_path: "Path", is_async: "bool", flags: "tuple[bool, bool]"
+) -> "None":
+    if is_async:
+        pytest.importorskip("aiosqlite")
+    db_path = tmp_path / "events_flags.db"
+    config_cls: Any = _AiosqliteConfig if is_async else SqliteConfig
+    sqlspec_config = config_cls(connection_config={"database": str(db_path)})
+    store = _RecordingEventQueueStore(flags)
+    manager = SQLSpec()
+
+    try:
+        if flags == (False, True):
+            if is_async:
+                async with manager.provide_session(sqlspec_config) as driver:
+                    await reconcile_events_queue_async(driver, store, "poll_queue")
+                    await driver.commit()
+            else:
+                with manager.provide_session(sqlspec_config) as driver:
+                    reconcile_events_queue_sync(driver, store, "poll_queue")
+                    driver.commit()
+            assert store.calls == []
+            with contextlib.closing(sqlite3.connect(db_path)) as connection:
+                tables = {
+                    row[0]
+                    for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+                }
+            assert tables == set()
+        else:
+            if is_async:
+                async with manager.provide_session(sqlspec_config) as driver:
+                    with pytest.raises(MigrationError, match="create_schema=False"):
+                        await reconcile_events_queue_async(driver, store, "poll_queue")
+                    await driver.rollback()
+            else:
+                with manager.provide_session(sqlspec_config) as driver:
+                    with pytest.raises(MigrationError, match="create_schema=False"):
+                        reconcile_events_queue_sync(driver, store, "poll_queue")
+                    driver.rollback()
+
+            _seed_legacy_events_queue(db_path)
+            store.calls.clear()
+            if is_async:
+                async with manager.provide_session(sqlspec_config) as driver:
+                    await reconcile_events_queue_async(driver, store, "poll_queue")
+                    await driver.commit()
+            else:
+                with manager.provide_session(sqlspec_config) as driver:
+                    reconcile_events_queue_sync(driver, store, "poll_queue")
+                    driver.commit()
+
+            with contextlib.closing(sqlite3.connect(db_path)) as connection:
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(sqlspec_event_queue)").fetchall()}
+            assert "acknowledged_at" in columns
+            assert ("native", "poll_queue", ("native_queue_obj",), False) in store.calls
+    finally:
+        await manager.close_all_pools()
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize(
+    ("flags", "expect_created"), [((True, True), True), ((True, False), False), ((False, True), False)]
+)
+async def test_reconcile_events_queue_fallback_without_schema_targets(
+    tmp_path: "Path", is_async: "bool", flags: "tuple[bool, bool]", expect_created: "bool"
+) -> "None":
+    if is_async:
+        pytest.importorskip("aiosqlite")
+    db_path = tmp_path / "events_fallback.db"
+    config_cls: Any = _AiosqliteConfig if is_async else SqliteConfig
+    sqlspec_config = config_cls(connection_config={"database": str(db_path)})
+    store = _FallbackEventQueueStore(flags)
+    manager = SQLSpec()
+
+    try:
+        if is_async:
+            async with manager.provide_session(sqlspec_config) as driver:
+                await reconcile_events_queue_async(driver, store, "poll_queue")
+                await driver.commit()
+        else:
+            with manager.provide_session(sqlspec_config) as driver:
+                reconcile_events_queue_sync(driver, store, "poll_queue")
+                driver.commit()
+    finally:
+        await manager.close_all_pools()
+
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        tables = {
+            row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+    assert ("sqlspec_event_queue" in tables) is expect_created
+
+
+async def test_backend_create_schema_spanner_preserves_create_schema_for_config() -> "None":
+    executed_ddl: "list[str]" = []
+
+    def _update_ddl(statements: "list[str]") -> "Any":
+        executed_ddl.extend(statements)
+        return SimpleNamespace(result=lambda: None)
+
+    spanner_config = _fake_adapter_config("spanner", dialect="spanner", is_async=False)
+    spanner_config.get_database = lambda: SimpleNamespace(update_ddl=_update_ddl)
+
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=cast("Any", spanner_config), migration_mode="reconcile", worker_wakeups=None
+        )
+    )
+    await backend.open()
+    try:
+        await backend.create_schema()
+    finally:
+        await backend.close()
+
+    assert any("CREATE TABLE `queue_task`" in statement for statement in executed_ddl)
+    assert any("`queue_maintenance`" in statement for statement in executed_ddl)
+    assert any("`queue_task_reservation`" in statement for statement in executed_ddl)

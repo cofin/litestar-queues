@@ -3,7 +3,7 @@
 import contextlib
 import sqlite3
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import pytest
 
@@ -233,8 +233,11 @@ async def test_column_map_operates_against_adopter_owned_sqlite_table(
     assert tables == {"adopter_jobs"}
 
 
+@pytest.mark.parametrize("migration_mode", ["versioned", "reconcile"])
 async def test_manage_schema_false_emits_no_schema_ddl(
-    tmp_path: "Path", sqlite_config_factory: 'Callable[["Path"], AiosqliteConfig]'
+    tmp_path: "Path",
+    sqlite_config_factory: 'Callable[["Path"], AiosqliteConfig]',
+    migration_mode: 'Literal["versioned", "reconcile"]',
 ) -> "None":
     """Schema creation, drop, migrations, and open() stay hands-off when opted out."""
     from litestar_queues import QueueConfig
@@ -242,7 +245,7 @@ async def test_manage_schema_false_emits_no_schema_ddl(
 
     db_path = tmp_path / "no-schema.db"
     config = sqlite_config_factory(db_path)
-    backend_config = SQLSpecBackendConfig(sqlspec_config=config, manage_schema=False)
+    backend_config = SQLSpecBackendConfig(sqlspec_config=config, manage_schema=False, migration_mode=migration_mode)
     backend = SQLSpecQueueBackend(backend_config=backend_config)
 
     store = create_queue_store(config, manage_schema=False)
@@ -256,6 +259,7 @@ async def test_manage_schema_false_emits_no_schema_ddl(
     commands = config.get_migration_commands()
     assert QUEUE_EXTENSION_NAME not in commands.extension_configs
     assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
+    assert QUEUE_EXTENSION_NAME not in {descriptor.name for descriptor in commands.extension_reconcilers}
     with contextlib.closing(sqlite3.connect(db_path)) as connection:
         tables = {table[0] for table in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert tables == set()
