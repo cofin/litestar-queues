@@ -48,6 +48,20 @@ _COCKROACH_UNIT_SECONDS = {
     "second": 1,
     "seconds": 1,
 }
+_MSSQL_INDEX_COLUMNS: "dict[str, tuple[tuple[str, str], ...]]" = {
+    "pending": (
+        ("status", ""),
+        ("queue", ""),
+        ("execution_backend", ""),
+        ("scheduled_at", ""),
+        ("priority", ""),
+        ("queued_at", ""),
+        ("created_at", ""),
+    ),
+    "heartbeat": (("status", ""), ("heartbeat_at", "")),
+    "created": (("created_at", " DESC"), ("id", " DESC")),
+    "list": (("status", ""), ("queue", ""), ("created_at", " DESC"), ("id", " DESC")),
+}
 
 
 class MssqlQueueStore(SQLSpecQueueStore):
@@ -80,6 +94,8 @@ class MssqlQueueStore(SQLSpecQueueStore):
             return []
         return [
             self._drop_mssql_index_statement("task_key"),
+            self._drop_mssql_index_statement("list"),
+            self._drop_mssql_index_statement("created"),
             self._drop_mssql_index_statement("heartbeat"),
             self._drop_mssql_index_statement("pending"),
             self._drop_mssql_table_statement(),
@@ -105,6 +121,8 @@ class MssqlQueueStore(SQLSpecQueueStore):
                 self._index_name("dispatch_repair"),
                 self._create_mssql_index_statement_sql("dispatch_repair", dispatch_columns),
             ),
+            (self._index_name("created"), self._create_mssql_index_statement("created")),
+            (self._index_name("list"), self._create_mssql_index_statement("list")),
         )
 
     def _string_type(self, length: "int | None" = None) -> "str":
@@ -163,25 +181,12 @@ class MssqlQueueStore(SQLSpecQueueStore):
         )
 
     def _create_mssql_index_statement(self, suffix: str) -> str:
-        if suffix == "pending":
-            columns = ", ".join(
-                self._quoted_col(canonical)
-                for canonical in (
-                    "status",
-                    "queue",
-                    "execution_backend",
-                    "scheduled_at",
-                    "priority",
-                    "queued_at",
-                    "created_at",
-                )
-            )
-            return self._create_mssql_index_statement_sql("pending", columns)
-        if suffix == "heartbeat":
-            columns = ", ".join(self._quoted_col(canonical) for canonical in ("status", "heartbeat_at"))
-            return self._create_mssql_index_statement_sql("heartbeat", columns)
-        msg = f"Unsupported SQL Server index suffix: {suffix}"
-        raise ValueError(msg)
+        spec = _MSSQL_INDEX_COLUMNS.get(suffix)
+        if spec is None:
+            msg = f"Unsupported SQL Server index suffix: {suffix}"
+            raise ValueError(msg)
+        columns = ", ".join(f"{self._quoted_col(canonical)}{order}" for canonical, order in spec)
+        return self._create_mssql_index_statement_sql(suffix, columns)
 
     def _create_mssql_index_statement_sql(self, suffix: str, columns: str) -> str:
         index_name = self._index_name(suffix)
@@ -325,6 +330,8 @@ class PostgresQueueStore(SQLSpecQueueStore):
         if not self._manage_schema:
             return []
         return [
+            self._to_sql(sql.drop_index(self._index_name("list")).if_exists()),
+            self._to_sql(sql.drop_index(self._index_name("created")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("heartbeat")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("scheduled")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("pending")).if_exists()),
@@ -343,11 +350,7 @@ class PostgresQueueStore(SQLSpecQueueStore):
             return []
         base_table = self._create_table_sql() if include_expiration else self._create_initial_table_sql()
         create_table = f"{base_table}{self._table_storage_clause()}"
-        return [
-            create_table,
-            *self._create_index_statements(include_expiration=include_expiration),
-            *self._storage_option_statements(),
-        ]
+        return [create_table, *(stmt for _, stmt in self._postgres_index_specs()), *self._storage_option_statements()]
 
     def _storage_option_statements(self) -> "list[str]":
         if not type(self).table_storage_parameters:
@@ -406,10 +409,22 @@ class PostgresQueueStore(SQLSpecQueueStore):
                     f"WHERE {self._quoted_col('status')} = 'running'"
                 ),
             ),
+            (
+                self._index_name("created"),
+                (
+                    f"CREATE INDEX IF NOT EXISTS {self._quoted_index_name('created')} "
+                    f"ON {table_name} ({self._quoted_col('created_at')} DESC, {self._quoted_col('id')} DESC)"
+                ),
+            ),
+            (
+                self._index_name("list"),
+                (
+                    f"CREATE INDEX IF NOT EXISTS {self._quoted_index_name('list')} "
+                    f"ON {table_name} ({self._quoted_col('status')}, {self._quoted_col('queue')}, "
+                    f"{self._quoted_col('created_at')} DESC, {self._quoted_col('id')} DESC)"
+                ),
+            ),
         )
-
-    def _create_index_statements(self, *, include_expiration: "bool" = True) -> "list[str]":
-        return [stmt for _, stmt in self._postgres_index_specs()]
 
     def _json_type(self) -> "str":
         return "JSONB"
@@ -500,6 +515,8 @@ class CockroachQueueStore(PostgresQueueStore):
         return f"ALTER TABLE {self._quoted_table_name()} SET ({options})"
 
     def _index_name(self, suffix: "str") -> "str":
+        if suffix in {"created", "list"}:
+            return PostgresQueueStore._index_name(self, suffix)
         return SQLSpecQueueStore._index_name(self, suffix)
 
     @staticmethod
@@ -725,6 +742,14 @@ class MySQLQueueStore(SQLSpecQueueStore):
                 ),
             ),
             ("heartbeat", f"{self._prefixed_col('status', 32)}, {self._quoted_col('heartbeat_at')}"),
+            ("created", f"{self._quoted_col('created_at')}, {self._quoted_col('id')}"),
+            (
+                "list",
+                (
+                    f"{self._prefixed_col('status', 32)}, {self._prefixed_col('queue', 191)}, "
+                    f"{self._quoted_col('created_at')}, {self._quoted_col('id')}"
+                ),
+            ),
         )
 
     def _create_mysql_table_statement(

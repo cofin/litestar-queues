@@ -109,6 +109,16 @@ class _OracledbQueueStore(SQLSpecQueueStore):
                     ),
                 ),
             ),
+            (
+                self._index_name("created"),
+                _create_index_block(self, "created", f"{self._col('created_at')}, {self._col('id')}"),
+            ),
+            (
+                self._index_name("list"),
+                _create_index_block(
+                    self, "list", ", ".join(self._col(c) for c in ("status", "queue", "created_at", "id"))
+                ),
+            ),
         )
 
     def create_statements(self) -> "list[str]":
@@ -124,7 +134,13 @@ class _OracledbQueueStore(SQLSpecQueueStore):
         """Return statements that drop Oracle queue artifacts."""
         if not self._manage_schema:
             return []
-        return [_drop_index_block(self, "heartbeat"), _drop_index_block(self, "pending"), _drop_table_block(self)]
+        return [
+            _drop_index_block(self, "list"),
+            _drop_index_block(self, "created"),
+            _drop_index_block(self, "heartbeat"),
+            _drop_index_block(self, "pending"),
+            _drop_table_block(self),
+        ]
 
     def serialize_json(self, canonical: "str", value: "Any") -> "str | bytes":
         """Serialize Oracle JSON according to configured storage.
