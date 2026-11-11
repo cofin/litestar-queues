@@ -126,15 +126,17 @@ class SQLSpecBackendConfig:
     manage_schema: "bool" = True
     """Whether backend startup and migrations may create package-owned queue tables."""
 
-    migration_mode: "ExtensionMigrationMode" = "versioned"
-    """SQLSpec extension migration strategy: ``'versioned'`` or ``'reconcile'``."""
+    migration_mode: "ExtensionMigrationMode" = "reconcile"
+    """SQLSpec extension migration strategy: ``'reconcile'`` or ``'versioned'``."""
 
     terminal_ttl: "float | None" = None
     """Optional retention window in seconds for terminal task rows.
 
     On databases that support filtered row-level expiration (CockroachDB and
-    Google Cloud Spanner), ``0001_create_queue_tasks.py`` and ``create_statements()``
-    embed a native row-level TTL policy scoped to terminal rows. When
+    Google Cloud Spanner), SQLSpec extension schema reconciliation
+    (``reconcile.py`` / ``migration_mode="reconcile"``),
+    ``0001_create_queue_tasks.py``, and ``create_statements()`` embed and
+    converge a native row-level TTL policy scoped to terminal rows. When
     ``WorkerConfig.terminal_retention`` is ``None``, workers also inherit this
     retention window for periodic ``cleanup_terminal()`` sweeps across all SQL
     dialects.

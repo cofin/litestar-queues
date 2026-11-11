@@ -85,10 +85,6 @@ async def test_sqlspec_legacy_queue_settings_do_not_override_typed_worker_wakeup
 
 def test_the_sqlspec_backend_registers_its_own_migrations_through_the_plugin() -> None:
     """QueuePlugin reaches SQLSpec migrations through the backend-owned hook."""
-    from litestar import Litestar
-
-    from litestar_queues import QueueConfig, QueuePlugin
-
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": ":memory:"},
         extension_config={QUEUE_EXTENSION_NAME: {"table_name": "legacy_jobs"}},
@@ -98,11 +94,13 @@ def test_the_sqlspec_backend_registers_its_own_migrations_through_the_plugin() -
     Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
 
     commands = sqlspec_config.get_migration_commands()
+    reconciler_names = {descriptor.name for descriptor in commands.extension_reconcilers}
     queue_settings = commands.extension_configs[QUEUE_EXTENSION_NAME]
     assert queue_settings["queue_table_name"] == "jobs"
     assert "table_name" not in queue_settings
     assert queue_settings["maintenance_table_name"] == "jobs_maintenance"
-    assert QUEUE_EXTENSION_NAME in commands.runner.extension_migrations
+    assert QUEUE_EXTENSION_NAME in reconciler_names
+    assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
 
 
 def test_only_backends_that_own_migrations_advertise_the_hook() -> None:
@@ -177,17 +175,15 @@ def test_dispatch_checked_store_mapping_precedence() -> None:
 
 def test_manage_schema_false_registers_no_packaged_queue_migration() -> None:
     """An application that owns its schema receives no packaged queue revision."""
-    from litestar import Litestar
-
-    from litestar_queues import QueueConfig, QueuePlugin
-
     sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
     backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config, manage_schema=False)
 
     Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
 
     commands = sqlspec_config.get_migration_commands()
+    reconciler_names = {descriptor.name for descriptor in commands.extension_reconcilers}
     assert QUEUE_EXTENSION_NAME not in commands.extension_configs
+    assert QUEUE_EXTENSION_NAME not in reconciler_names
     assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
     assert QUEUE_EXTENSION_NAME not in commands.runner.extension_configs
     assert QUEUE_EXTENSION_NAME not in (sqlspec_config.extension_config or {})
@@ -213,10 +209,6 @@ def test_manage_schema_false_registers_no_packaged_events_migration() -> None:
 
 def test_manage_schema_true_still_registers_both_packaged_migrations() -> None:
     """Owning the schema keeps packaged migrations registered with unchanged settings."""
-    from litestar import Litestar
-
-    from litestar_queues import QueueConfig, QueuePlugin
-
     sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
     backend_config = SQLSpecBackendConfig(
         sqlspec_config=sqlspec_config,
@@ -227,41 +219,70 @@ def test_manage_schema_true_still_registers_both_packaged_migrations() -> None:
     Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
 
     commands = sqlspec_config.get_migration_commands()
+    reconciler_names = {descriptor.name for descriptor in commands.extension_reconcilers}
     queue_settings = commands.extension_configs[QUEUE_EXTENSION_NAME]
     assert queue_settings["queue_table_name"] == "jobs"
     assert queue_settings["maintenance_table_name"] == "jobs_maintenance"
     assert queue_settings["task_reservation_table_name"] == "jobs_reservation"
-    assert QUEUE_EXTENSION_NAME in commands.runner.extension_migrations
+    assert QUEUE_EXTENSION_NAME in reconciler_names
+    assert "events" in reconciler_names
+    assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
+    assert "events" not in commands.runner.extension_migrations
     assert commands.runner.extension_configs[QUEUE_EXTENSION_NAME] == queue_settings
     events_settings = cast("dict[str, Any]", (sqlspec_config.extension_config or {})["events"])
     assert events_settings["backend"] == "poll_queue"
 
 
+@pytest.mark.parametrize(
+    ("migration_mode", "expect_reconciler", "expect_versioned"),
+    [(None, True, False), ("reconcile", True, False), ("versioned", False, True)],
+)
+def test_plugin_discovery_partitions_extensions_by_migration_mode(
+    migration_mode: Any, expect_reconciler: bool, expect_versioned: bool
+) -> None:
+    """QueuePlugin discovery partitions queue and events extensions by migration_mode."""
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    backend_kwargs: dict[str, Any] = {
+        "sqlspec_config": sqlspec_config,
+        "queue_table_name": "jobs",
+        "worker_wakeups": SQLSpecWorkerWakeupConfig(transport="poll_queue"),
+    }
+    if migration_mode is not None:
+        backend_kwargs["migration_mode"] = migration_mode
+    backend_config = SQLSpecBackendConfig(**backend_kwargs)
+
+    Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
+
+    commands = sqlspec_config.get_migration_commands()
+    reconciler_names = {descriptor.name for descriptor in commands.extension_reconcilers}
+    assert (QUEUE_EXTENSION_NAME in reconciler_names) is expect_reconciler
+    assert ("events" in reconciler_names) is expect_reconciler
+    assert (QUEUE_EXTENSION_NAME in commands.runner.extension_migrations) is expect_versioned
+    assert ("events" in commands.runner.extension_migrations) is expect_versioned
+    assert QUEUE_EXTENSION_NAME in commands.extension_configs
+    assert "events" in commands.extension_configs
+
+
 def test_manage_schema_false_on_the_direct_extension_call_registers_nothing() -> None:
     """The documented standalone migration path honors adopter-owned schema too."""
-    from litestar_queues.backends.sqlspec.extension import (
-        configure_events_migration_extension,
-        configure_queue_migration_extension,
-    )
-
     sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
     configure_queue_migration_extension(sqlspec_config, queue_table_name="jobs", manage_schema=False)
     configure_events_migration_extension(sqlspec_config, backend="poll_queue", manage_schema=False)
 
     commands = sqlspec_config.get_migration_commands()
+    reconciler_names = {descriptor.name for descriptor in commands.extension_reconcilers}
     assert QUEUE_EXTENSION_NAME not in commands.extension_configs
+    assert "events" not in commands.extension_configs
+    assert QUEUE_EXTENSION_NAME not in reconciler_names
+    assert "events" not in reconciler_names
     assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
+    assert "events" not in commands.runner.extension_migrations
     assert QUEUE_EXTENSION_NAME not in commands.runner.extension_configs
     assert sqlspec_config.extension_config in (None, {})
 
 
 def test_manage_schema_false_removes_an_earlier_queue_registration() -> None:
     """A registration made before the plugin runs does not survive adopter-owned schema."""
-    from litestar import Litestar
-
-    from litestar_queues import QueueConfig, QueuePlugin
-    from litestar_queues.backends.sqlspec.extension import configure_queue_migration_extension
-
     sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
     configure_queue_migration_extension(sqlspec_config)
     backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config, manage_schema=False)
@@ -269,7 +290,9 @@ def test_manage_schema_false_removes_an_earlier_queue_registration() -> None:
     Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
 
     commands = sqlspec_config.get_migration_commands()
+    reconciler_names = {descriptor.name for descriptor in commands.extension_reconcilers}
     assert QUEUE_EXTENSION_NAME not in commands.extension_configs
+    assert QUEUE_EXTENSION_NAME not in reconciler_names
     assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
     assert QUEUE_EXTENSION_NAME not in commands.runner.extension_configs
     assert QUEUE_EXTENSION_NAME not in (sqlspec_config.extension_config or {})
@@ -277,14 +300,14 @@ def test_manage_schema_false_removes_an_earlier_queue_registration() -> None:
 
 def test_manage_schema_false_on_the_direct_extension_call_removes_an_earlier_registration() -> None:
     """The documented standalone recipe is undone by a later adopter-owned call."""
-    from litestar_queues.backends.sqlspec.extension import configure_queue_migration_extension
-
     sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
     configure_queue_migration_extension(sqlspec_config, queue_table_name="jobs")
     configure_queue_migration_extension(sqlspec_config, queue_table_name="jobs", manage_schema=False)
 
     commands = sqlspec_config.get_migration_commands()
+    reconciler_names = {descriptor.name for descriptor in commands.extension_reconcilers}
     assert QUEUE_EXTENSION_NAME not in commands.extension_configs
+    assert QUEUE_EXTENSION_NAME not in reconciler_names
     assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
     assert QUEUE_EXTENSION_NAME not in commands.runner.extension_configs
     assert QUEUE_EXTENSION_NAME not in (sqlspec_config.extension_config or {})
@@ -292,14 +315,14 @@ def test_manage_schema_false_on_the_direct_extension_call_removes_an_earlier_reg
 
 def test_manage_schema_false_removes_an_earlier_events_registration() -> None:
     """The packaged events queue migration is deregistered the same way."""
-    from litestar_queues.backends.sqlspec.extension import configure_events_migration_extension
-
     sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
     configure_events_migration_extension(sqlspec_config, backend="poll_queue")
     configure_events_migration_extension(sqlspec_config, backend="poll_queue", manage_schema=False)
 
     commands = sqlspec_config.get_migration_commands()
+    reconciler_names = {descriptor.name for descriptor in commands.extension_reconcilers}
     assert "events" not in commands.extension_configs
+    assert "events" not in reconciler_names
     assert "events" not in commands.runner.extension_migrations
     assert "events" not in commands.runner.extension_configs
     assert "events" not in (sqlspec_config.extension_config or {})
@@ -308,11 +331,6 @@ def test_manage_schema_false_removes_an_earlier_events_registration() -> None:
 
 def test_manage_schema_false_removes_an_earlier_events_registration_through_the_plugin() -> None:
     """The plugin path deregisters an events registration made before it ran."""
-    from litestar import Litestar
-
-    from litestar_queues import QueueConfig, QueuePlugin
-    from litestar_queues.backends.sqlspec.extension import configure_events_migration_extension
-
     sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
     configure_events_migration_extension(sqlspec_config, backend="poll_queue")
     backend_config = SQLSpecBackendConfig(
@@ -324,7 +342,9 @@ def test_manage_schema_false_removes_an_earlier_events_registration_through_the_
     Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
 
     commands = sqlspec_config.get_migration_commands()
+    reconciler_names = {descriptor.name for descriptor in commands.extension_reconcilers}
     assert "events" not in commands.extension_configs
+    assert "events" not in reconciler_names
     assert "events" not in commands.runner.extension_migrations
     assert "events" not in commands.runner.extension_configs
     assert "events" not in (sqlspec_config.extension_config or {})
@@ -332,11 +352,6 @@ def test_manage_schema_false_removes_an_earlier_events_registration_through_the_
 
 def test_manage_schema_false_removes_an_earlier_events_registration_without_wakeups() -> None:
     """Disabled wakeups do not exempt an events registration from adopter-owned schema."""
-    from litestar import Litestar
-
-    from litestar_queues import QueueConfig, QueuePlugin
-    from litestar_queues.backends.sqlspec.extension import configure_events_migration_extension
-
     sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
     configure_events_migration_extension(sqlspec_config, backend="poll_queue")
     backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config, worker_wakeups=None, manage_schema=False)
@@ -344,7 +359,9 @@ def test_manage_schema_false_removes_an_earlier_events_registration_without_wake
     Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
 
     commands = sqlspec_config.get_migration_commands()
+    reconciler_names = {descriptor.name for descriptor in commands.extension_reconcilers}
     assert "events" not in commands.extension_configs
+    assert "events" not in reconciler_names
     assert "events" not in commands.runner.extension_migrations
     assert "events" not in commands.runner.extension_configs
     assert "events" not in (sqlspec_config.extension_config or {})
@@ -398,7 +415,7 @@ async def test_manage_schema_switching_to_false_leaves_the_applied_revision_alon
         return [str(row["name"]) for row in rows]
 
     owned = make_config()
-    configure_queue_migration_extension(owned, queue_table_name="queue_task")
+    configure_queue_migration_extension(owned, queue_table_name="queue_task", migration_mode="versioned")
     await owned.migrate_up(echo=False)
     try:
         assert await applied_revisions(owned) == ["ext_litestar_queues_0001"]
@@ -408,7 +425,9 @@ async def test_manage_schema_switching_to_false_leaves_the_applied_revision_alon
     assert "queue_task" in migrated_tables
 
     adopter = make_config()
-    configure_queue_migration_extension(adopter, queue_table_name="queue_task", manage_schema=False)
+    configure_queue_migration_extension(
+        adopter, queue_table_name="queue_task", manage_schema=False, migration_mode="versioned"
+    )
     await adopter.migrate_up(echo=False)
     try:
         assert await applied_revisions(adopter) == ["ext_litestar_queues_0001"]
@@ -438,7 +457,7 @@ async def test_migration_registration_toggle_preserves_adopter_options_and_histo
             assert await driver.select("SELECT version_num FROM application_revisions") == []
             assert await driver.select("SELECT name FROM sqlite_master WHERE name='jobs'") == []
 
-        configure_queue_migration_extension(config, queue_table_name="jobs")
+        configure_queue_migration_extension(config, queue_table_name="jobs", migration_mode="versioned")
         commands = config.get_migration_commands()
         assert commands.extension_configs[QUEUE_EXTENSION_NAME]["queue_table_name"] == "jobs"
         await config.migrate_up(echo=False)
@@ -449,7 +468,9 @@ async def test_migration_registration_toggle_preserves_adopter_options_and_histo
 
         for manage_schema in (False, False, True):
             config.get_migration_commands()
-            configure_queue_migration_extension(config, queue_table_name="jobs", manage_schema=manage_schema)
+            configure_queue_migration_extension(
+                config, queue_table_name="jobs", manage_schema=manage_schema, migration_mode="versioned"
+            )
             commands = config.get_migration_commands()
             assert (QUEUE_EXTENSION_NAME in commands.runner.extension_migrations) is manage_schema
             unrelated_settings = cast("dict[str, Any]", config.extension_config["unrelated"])
@@ -528,7 +549,7 @@ class _SpySQLSpecConfig:
 
 @pytest.mark.parametrize(
     ("symbol_name", "expected_value"),
-    [("DEFAULT_MIGRATION_MODE", "versioned"), ("VALID_MIGRATION_MODES", frozenset({"versioned", "reconcile"}))],
+    [("DEFAULT_MIGRATION_MODE", "reconcile"), ("VALID_MIGRATION_MODES", frozenset({"versioned", "reconcile"}))],
 )
 def test_extension_module_exports_migration_mode_constants(symbol_name: str, expected_value: Any) -> None:
     """The SQLSpec extension module exports migration mode defaults, valid set, and validator."""
@@ -677,26 +698,38 @@ def test_configure_extensions_manage_schema_false_removes_without_adding(mode: A
     assert spy_cfg.extension_config == {}
 
 
-@pytest.mark.parametrize("mode", [None, "versioned"])
-def test_aiosqlite_versioned_get_migration_commands_includes_migration_mode(mode: Any) -> None:
-    """Live AiosqliteConfig registers versioned queue and events migrations with explicit migration_mode."""
+@pytest.mark.parametrize(
+    ("mode", "expected_mode", "expect_reconciler", "expect_versioned"),
+    [
+        (None, "reconcile", True, False),
+        ("reconcile", "reconcile", True, False),
+        ("versioned", "versioned", False, True),
+    ],
+)
+def test_aiosqlite_get_migration_commands_includes_migration_mode(
+    mode: Any, expected_mode: str, expect_reconciler: bool, expect_versioned: bool
+) -> None:
+    """Live AiosqliteConfig partitions queue and events extensions by migration_mode."""
     sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
 
     configure_events_migration_extension(sqlspec_config, backend="poll_queue", migration_mode=mode)
     configure_queue_migration_extension(sqlspec_config, migration_mode=mode)
 
     commands = sqlspec_config.get_migration_commands()
-    assert commands.extension_configs["events"]["migration_mode"] == "versioned"
-    assert commands.extension_configs[QUEUE_EXTENSION_NAME]["migration_mode"] == "versioned"
-    assert "events" in commands.runner.extension_migrations
-    assert QUEUE_EXTENSION_NAME in commands.runner.extension_migrations
+    reconciler_names = {descriptor.name for descriptor in commands.extension_reconcilers}
+    assert commands.extension_configs["events"]["migration_mode"] == expected_mode
+    assert commands.extension_configs[QUEUE_EXTENSION_NAME]["migration_mode"] == expected_mode
+    assert ("events" in reconciler_names) is expect_reconciler
+    assert (QUEUE_EXTENSION_NAME in reconciler_names) is expect_reconciler
+    assert ("events" in commands.runner.extension_migrations) is expect_versioned
+    assert (QUEUE_EXTENSION_NAME in commands.runner.extension_migrations) is expect_versioned
 
 
 def test_sqlspec_backend_config_default_migration_mode() -> None:
-    """SQLSpecBackendConfig defaults migration_mode to versioned before reconcile activation."""
+    """SQLSpecBackendConfig defaults migration_mode to reconcile."""
     config = SQLSpecBackendConfig()
 
-    assert config.migration_mode == "versioned"
+    assert config.migration_mode == "reconcile"
     assert config.migration_mode == DEFAULT_MIGRATION_MODE
 
 
