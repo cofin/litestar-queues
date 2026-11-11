@@ -3,25 +3,29 @@
 import contextlib
 import importlib
 import sqlite3
+import tomllib
+from datetime import UTC, datetime
+from inspect import isawaitable
+from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from unittest.mock import MagicMock
+from uuid import UUID, uuid4
 
 import pytest
 
 pytest.importorskip("sqlspec")
 
-from datetime import UTC
-from unittest.mock import MagicMock
-from uuid import UUID
-
+from click import Group
 from sqlspec import SQLSpec
 from sqlspec.adapters.sqlite import SqliteConfig
 from sqlspec.exceptions import MigrationError
 from sqlspec.migrations.context import MigrationContext
 from sqlspec.migrations.schema import SchemaTarget
 
-from litestar_queues import WorkerConfig
+from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend, SQLSpecWorkerWakeupConfig
+from litestar_queues.backends.sqlspec.event_log import create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
 from litestar_queues.backends.sqlspec.migrations.reconcile import (
     down,
@@ -39,7 +43,15 @@ from litestar_queues.backends.sqlspec.schema import (
     task_reservation_table_name_for,
 )
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
+from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
+from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEvent
 from tests.integration._names import table_name_for_test
+
+_AdbcConfig: Any
+try:
+    from sqlspec.adapters.adbc import AdbcConfig as _AdbcConfig
+except ImportError:  # pragma: no cover
+    _AdbcConfig = None
 
 _AiosqliteConfig: Any
 try:
@@ -47,11 +59,34 @@ try:
 except ImportError:  # pragma: no cover
     _AiosqliteConfig = None
 
-if TYPE_CHECKING:
-    from pathlib import Path
+_AsyncmyConfig: Any
+try:
+    from sqlspec.adapters.asyncmy import AsyncmyConfig as _AsyncmyConfig
+except ImportError:  # pragma: no cover
+    _AsyncmyConfig = None
 
+_AsyncpgConfig: Any
+try:
+    from sqlspec.adapters.asyncpg import AsyncpgConfig as _AsyncpgConfig
+except ImportError:  # pragma: no cover
+    _AsyncpgConfig = None
+
+_CockroachAsyncpgConfig: Any
+try:
+    from sqlspec.adapters.cockroach_asyncpg import CockroachAsyncpgConfig as _CockroachAsyncpgConfig
+except ImportError:  # pragma: no cover
+    _CockroachAsyncpgConfig = None
+
+_SpannerSyncConfig: Any
+try:
+    from sqlspec.adapters.spanner import SpannerSyncConfig as _SpannerSyncConfig
+except ImportError:  # pragma: no cover
+    _SpannerSyncConfig = None
+
+if TYPE_CHECKING:
     from pytest import FixtureRequest
 
+    from litestar_queues.backends.sqlspec.typing import ExtensionMigrationMode
     from tests.integration._backends import PostgresService
 
 pytestmark = pytest.mark.anyio
@@ -157,14 +192,10 @@ async def test_sqlspec_backend_migration_uses_configured_table_names() -> "None"
 
 
 async def test_queue_plugin_keeps_runtime_and_migration_table_overrides_aligned() -> "None":
-    pytest.importorskip("aiosqlite")
-    from click import Group
-    from sqlspec.adapters.aiosqlite import AiosqliteConfig
+    if _AiosqliteConfig is None:
+        pytest.skip("aiosqlite adapter is not installed")
 
-    from litestar_queues import QueueConfig, QueuePlugin
-    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
-
-    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    sqlspec_config = _AiosqliteConfig(connection_config={"database": ":memory:"})
     backend_config = SQLSpecBackendConfig(
         sqlspec_config=sqlspec_config,
         queue_table_name="custom_queue",
@@ -375,13 +406,9 @@ async def test_sqlserver_native_migration_schema_and_queue_cycle(
     request: "FixtureRequest", adapter: "str", autocommit: "bool"
 ) -> "None":
     """Native SQL Server configs migrate twice and serve queues in an explicit schema."""
-    from uuid import uuid4
-
-    from sqlspec import SQLSpec
     from sqlspec.adapters.mssql_python import MssqlPythonConfig
     from sqlspec.adapters.pymssql import PymssqlConfig
 
-    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
     from tests.integration.backends.sqlspec._schema import run_queue_migrations
 
     svc = request.getfixturevalue("mssql_service")
@@ -664,11 +691,11 @@ async def test_reconcile_and_downgrade_sync_sqlite_with_event_history(tmp_path: 
 
 
 async def test_reconcile_aiosqlite_runner_migrate_up_and_down(tmp_path: "Path") -> "None":
-    pytest.importorskip("aiosqlite")
-    from sqlspec.adapters.aiosqlite import AiosqliteConfig
+    if _AiosqliteConfig is None:
+        pytest.skip("aiosqlite adapter is not installed")
 
     db_path = tmp_path / "async_reconcile.db"
-    config = AiosqliteConfig(connection_config={"database": str(db_path)})
+    config = _AiosqliteConfig(connection_config={"database": str(db_path)})
     configure_queue_migration_extension(config, event_history_enabled=True, migration_mode="reconcile")
 
     commands = config.get_migration_commands()
@@ -1207,3 +1234,715 @@ async def test_backend_create_schema_spanner_preserves_create_schema_for_config(
     assert any("CREATE TABLE `queue_task`" in statement for statement in executed_ddl)
     assert any("`queue_maintenance`" in statement for statement in executed_ddl)
     assert any("`queue_task_reservation`" in statement for statement in executed_ddl)
+
+
+class _CustomThirdPartySqliteStore(SqliteQueueStore):
+    """Third-party SQLite store subclass for reconcile registration tests."""
+
+
+async def _run_configured_migrations(
+    sqlspec_config: "Any",
+    *,
+    direction: "Literal['up', 'down']" = "up",
+    revision: "str" = "head",
+    migration_mode: "ExtensionMigrationMode" = "reconcile",
+    queue_table_name: "str" = "queue_task",
+    event_history_enabled: "bool" = False,
+    event_history_extra_columns: "tuple[EventHistoryExtraColumn, ...]" = (),
+    terminal_ttl: "float | None" = None,
+) -> "None":
+    configure_queue_migration_extension(
+        sqlspec_config,
+        queue_table_name=queue_table_name,
+        event_history_enabled=event_history_enabled,
+        event_history_extra_columns=event_history_extra_columns,
+        terminal_ttl=terminal_ttl,
+        migration_mode=migration_mode,
+    )
+    if direction == "down":
+        result = sqlspec_config.migrate_down(revision="base", echo=False)
+    else:
+        result = sqlspec_config.migrate_up(revision=revision, echo=False)
+    if isawaitable(result):
+        await result
+
+
+def _drop_postgres_tables_sql(queue_table: "str", tracking_table: "str | None" = None) -> "str":
+    tables = [
+        task_reservation_table_name_for(queue_table),
+        maintenance_table_name_for(queue_table),
+        event_history_table_name_for(queue_table),
+        queue_table,
+    ]
+    if tracking_table is not None:
+        tables.append(tracking_table)
+    return "; ".join(f'DROP TABLE IF EXISTS "{name}"' for name in tables)
+
+
+def _drop_mysql_tables_sql(queue_table: "str", tracking_table: "str | None" = None) -> "list[str]":
+    tables = [
+        task_reservation_table_name_for(queue_table),
+        maintenance_table_name_for(queue_table),
+        event_history_table_name_for(queue_table),
+        queue_table,
+    ]
+    if tracking_table is not None:
+        tables.append(tracking_table)
+    return [f"DROP TABLE IF EXISTS `{name}`" for name in tables]
+
+
+async def _execute_all(driver: "Any", statements: "list[str]") -> "None":
+    for statement in statements:
+        await driver.execute_script(statement)
+
+
+def test_pyproject_declares_sqlspec_072_floor() -> "None":
+    pyproject_path = Path(__file__).resolve().parents[5] / "pyproject.toml"
+    manifest = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+
+    optional_sqlspec = manifest["project"]["optional-dependencies"]["sqlspec"]
+    benchmark_deps = manifest["dependency-groups"]["benchmark-backends"]
+    adapter_deps = manifest["dependency-groups"]["test-adapters"]
+
+    assert optional_sqlspec == ["sqlspec>=0.72.0"]
+    assert "sqlspec[performance]>=0.72.0" in benchmark_deps
+    assert any(dep.startswith("sqlspec[") and dep.endswith(">=0.72.0") for dep in adapter_deps)
+
+
+@pytest.mark.parametrize("adapter", ["sqlite", "aiosqlite"])
+async def test_reconcile_default_and_repeat_migrates_and_preserves_rows(tmp_path: "Path", adapter: "str") -> "None":
+    if adapter == "aiosqlite" and _AiosqliteConfig is None:
+        pytest.skip("aiosqlite adapter is not installed")
+
+    db_path = tmp_path / f"repeat_{adapter}.db"
+    config_cls: Any = _AiosqliteConfig if adapter == "aiosqlite" else SqliteConfig
+    config = config_cls(connection_config={"database": str(db_path)})
+    expected_tables = {
+        "queue_task",
+        event_history_table_name_for("queue_task"),
+        maintenance_table_name_for("queue_task"),
+        task_reservation_table_name_for("queue_task"),
+    }
+
+    await _run_configured_migrations(config, event_history_enabled=True)
+
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(sqlspec_config=config, migration_mode="reconcile", worker_wakeups=None)
+    )
+    await backend.open()
+    try:
+        task_record = await backend.enqueue("tasks.reconcile.repeat", kwargs={"step": 1})
+        assert (
+            await backend.reserve_identity("inv-forever-1", task_id=task_record.id, task_name=task_record.task_name)
+            is None
+        )
+        event_log = backend.get_event_log(EventHistoryConfig(batch_size=1, flush_interval=60))
+        assert event_log is not None
+        await event_log.publish_event(
+            QueueEvent(
+                id=f"evt-{adapter}",
+                occurred_at=datetime.now(UTC),
+                type="task.enqueued",
+                scope="task",
+                scope_key=str(task_record.id),
+                payload={"step": 1},
+            )
+        )
+        await event_log.flush_events()
+    finally:
+        await backend.close()
+
+    await _run_configured_migrations(config, event_history_enabled=True)
+
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        tables = {
+            row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+        queue_indexes = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'queue_task'"
+            ).fetchall()
+        }
+        ext_versions = connection.execute(
+            "SELECT version_num FROM ddl_migrations WHERE version_num LIKE 'ext_litestar_queues_%'"
+        ).fetchall()
+        task_rows = connection.execute("SELECT id, task_name FROM queue_task").fetchall()
+        reservation_rows = connection.execute("SELECT identity_key FROM queue_task_reservation").fetchall()
+        event_rows = connection.execute("SELECT event_id FROM queue_task_event_history").fetchall()
+
+    assert expected_tables.issubset(tables)
+    assert any("pending" in index_name for index_name in queue_indexes)
+    assert len(queue_indexes) >= 3
+    assert ext_versions == []
+    assert task_rows == [(str(task_record.id), "tasks.reconcile.repeat")]
+    assert reservation_rows == [("inv-forever-1",)]
+    assert event_rows == [(f"evt-{adapter}",)]
+
+    await _run_configured_migrations(config, direction="down", revision="base", event_history_enabled=True)
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        remaining_tables = {
+            row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+    assert expected_tables.isdisjoint(remaining_tables)
+    close_result = config.close_pool()
+    if isawaitable(close_result):
+        await close_result
+
+
+@pytest.mark.xdist_group("postgres_service")
+async def test_reconcile_default_and_repeat_postgres_preserves_rows(request: "FixtureRequest") -> "None":
+    if _AsyncpgConfig is None:
+        pytest.skip("asyncpg adapter is not installed")
+    try:
+        postgres_service = request.getfixturevalue("postgres_service")
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Docker service not available: {exc}")
+
+    queue_table = table_name_for_test("lq_rec_pg", "asyncpg", request.node.nodeid)
+    tracking_table = f"{queue_table[:48]}_mig"
+    config = _AsyncpgConfig(
+        connection_config={
+            "host": postgres_service.host,
+            "port": postgres_service.port,
+            "user": postgres_service.user,
+            "password": postgres_service.password,
+            "database": postgres_service.database,
+        },
+        migration_config={"version_table_name": tracking_table},
+    )
+    expected_tables = {
+        queue_table,
+        event_history_table_name_for(queue_table),
+        maintenance_table_name_for(queue_table),
+        task_reservation_table_name_for(queue_table),
+    }
+    manager = SQLSpec()
+    try:
+        await _run_configured_migrations(config, queue_table_name=queue_table, event_history_enabled=True)
+
+        backend = SQLSpecQueueBackend(
+            backend_config=SQLSpecBackendConfig(
+                sqlspec_config=config, queue_table_name=queue_table, migration_mode="reconcile", worker_wakeups=None
+            )
+        )
+        await backend.open()
+        try:
+            task_record = await backend.enqueue("tasks.pg.reconcile")
+            assert (
+                await backend.reserve_identity("pg-forever-1", task_id=task_record.id, task_name=task_record.task_name)
+                is None
+            )
+        finally:
+            await backend.close()
+
+        await _run_configured_migrations(config, queue_table_name=queue_table, event_history_enabled=True)
+
+        async with manager.provide_session(config) as driver:
+            tables = await driver.select("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+            assert expected_tables.issubset({str(row["tablename"]) for row in tables})
+            indexes = await driver.select(
+                "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = :table",
+                {"table": queue_table},
+            )
+            companion_names = {str(row["indexname"]) for row in indexes if not str(row["indexname"]).endswith("_pkey")}
+            assert any("pending" in name for name in companion_names)
+            assert len(companion_names) >= 3
+            ext_count = await driver.select_value(
+                f"SELECT COUNT(*) FROM \"{tracking_table}\" WHERE version_num LIKE 'ext_litestar_queues_%'"
+            )
+            assert int(ext_count or 0) == 0
+            stored_count = await driver.select_value(f'SELECT COUNT(*) FROM "{queue_table}"')
+            assert int(stored_count or 0) == 1
+
+        await _run_configured_migrations(
+            config, direction="down", revision="base", queue_table_name=queue_table, event_history_enabled=True
+        )
+        async with manager.provide_session(config) as driver:
+            remaining = await driver.select("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+            assert expected_tables.isdisjoint({str(row["tablename"]) for row in remaining})
+    finally:
+        async with manager.provide_session(config) as driver:
+            await driver.execute_script(_drop_postgres_tables_sql(queue_table, tracking_table))
+            await driver.commit()
+        await config.close_pool()
+        await manager.close_all_pools()
+
+
+async def test_versioned_opt_out_records_extension_migration_revision(tmp_path: "Path") -> "None":
+    if _AiosqliteConfig is None:
+        pytest.skip("aiosqlite adapter is not installed")
+
+    db_path = tmp_path / "versioned_opt_out.db"
+    config = _AiosqliteConfig(connection_config={"database": str(db_path)})
+    try:
+        await _run_configured_migrations(config, migration_mode="versioned", event_history_enabled=True)
+        with contextlib.closing(sqlite3.connect(db_path)) as connection:
+            versions = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT version_num FROM ddl_migrations WHERE version_num LIKE 'ext_litestar_queues_%'"
+                ).fetchall()
+            ]
+            tables = {
+                row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }
+        assert versions == ["ext_litestar_queues_0001"]
+        assert {"queue_task", "queue_task_event_history", "queue_maintenance", "queue_task_reservation"}.issubset(
+            tables
+        )
+    finally:
+        await config.close_pool()
+
+
+async def test_reconcile_converges_nullable_extra_event_column_and_index(tmp_path: "Path") -> "None":
+    db_path = tmp_path / "nullable_converge.db"
+    config = SqliteConfig(connection_config={"database": str(db_path)})
+    existing_task_id = UUID("00000000-0000-0000-0000-000000000099")
+    _seed_legacy_queue_task(db_path, config, existing_task_id, "tasks.legacy.converge")
+
+    base_event_store = create_event_log_store(config, queue_table_name="queue_task", manage_schema=True)
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        connection.executescript(base_event_store.create_table_statement())
+        connection.execute(
+            """
+            INSERT INTO queue_task_event_history (
+                event_id, event_type, scope, scope_key, detail, sequence, occurred_at, created_at
+            ) VALUES ('evt-legacy-1', 'task.log', 'task', 'scope-1', '{}', 1,
+                      '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+            """
+        )
+        event_cols_before = {
+            row[1] for row in connection.execute("PRAGMA table_info(queue_task_event_history)").fetchall()
+        }
+        assert "tenant_id" not in event_cols_before
+        connection.commit()
+
+    extra_column = EventHistoryExtraColumn(name="tenant_id", source="tenant_id", indexed=True)
+    expected_extra_index = create_event_log_store(
+        config, queue_table_name="queue_task", manage_schema=True, extra_columns=(extra_column,)
+    )._index_name("tenant_id")
+    try:
+        await _run_configured_migrations(
+            config, event_history_enabled=True, event_history_extra_columns=(extra_column,)
+        )
+        with contextlib.closing(sqlite3.connect(db_path)) as connection:
+            queue_cols = {row[1] for row in connection.execute("PRAGMA table_info(queue_task)").fetchall()}
+            event_cols = {
+                row[1] for row in connection.execute("PRAGMA table_info(queue_task_event_history)").fetchall()
+            }
+            event_indexes = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'queue_task_event_history'"
+                ).fetchall()
+            }
+            extra_index_cols = [
+                row[2] for row in connection.execute(f'PRAGMA index_info("{expected_extra_index}")').fetchall()
+            ]
+            preserved_task = connection.execute(
+                "SELECT task_name FROM queue_task WHERE id = ?", (str(existing_task_id),)
+            ).fetchone()
+            preserved_event = connection.execute(
+                "SELECT event_id, tenant_id FROM queue_task_event_history WHERE event_id = 'evt-legacy-1'"
+            ).fetchone()
+
+        assert "expires_at" in queue_cols
+        assert "tenant_id" in event_cols
+        assert expected_extra_index in event_indexes
+        assert extra_index_cols == ["tenant_id", "occurred_at"]
+        assert preserved_task == ("tasks.legacy.converge",)
+        assert preserved_event == ("evt-legacy-1", None)
+    finally:
+        config.close_pool()
+
+
+async def test_reconcile_migrate_up_refuses_missing_required_column(tmp_path: "Path") -> "None":
+    db_path = tmp_path / "runner_strict_refusal.db"
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("CREATE TABLE queue_task (id VARCHAR(64) PRIMARY KEY, status VARCHAR(32) NOT NULL)")
+        connection.commit()
+
+    config = SqliteConfig(connection_config={"database": str(db_path)})
+    try:
+        with pytest.raises(MigrationError):
+            await _run_configured_migrations(config)
+        with contextlib.closing(sqlite3.connect(db_path)) as connection:
+            columns = [row[1] for row in connection.execute("PRAGMA table_info(queue_task)").fetchall()]
+        assert columns == ["id", "status"]
+    finally:
+        config.close_pool()
+
+
+def _build_index_repair_target(request: "FixtureRequest", dialect: "str") -> "tuple[Any, str, str, str]":
+    if dialect == "postgres":
+        if _AsyncpgConfig is None:
+            pytest.skip("asyncpg adapter is not installed")
+        try:
+            svc = request.getfixturevalue("postgres_service")
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Docker service not available: {exc}")
+        table = table_name_for_test("lq_idx_rep", "asyncpg", request.node.nodeid)
+        tracking = f"{table[:48]}_mig"
+        config: Any = _AsyncpgConfig(
+            connection_config={
+                "host": svc.host,
+                "port": svc.port,
+                "user": svc.user,
+                "password": svc.password,
+                "database": svc.database,
+            },
+            migration_config={"version_table_name": tracking},
+        )
+        return config, table, tracking, "public"
+
+    if _AsyncmyConfig is None:
+        pytest.skip("asyncmy adapter is not installed")
+    try:
+        svc = request.getfixturevalue("mysql_service")
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Docker service not available: {exc}")
+    table = table_name_for_test("lq_idx_rep", "asyncmy", request.node.nodeid)
+    tracking = f"{table[:48]}_mig"
+    config = _AsyncmyConfig(
+        connection_config={
+            "host": svc.host,
+            "port": svc.port,
+            "user": svc.user,
+            "password": svc.password,
+            "database": svc.db,
+        },
+        migration_config={"version_table_name": tracking},
+    )
+    return config, table, tracking, str(svc.db)
+
+
+@pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+async def test_reconcile_repairs_dropped_companion_index_postgres_and_mysql(
+    request: "FixtureRequest", dialect: "str"
+) -> "None":
+    config, table, tracking, schema_name = _build_index_repair_target(request, dialect)
+    pending_index = create_queue_store(config, table_name=table)._index_name("pending")
+    drop_index_sql = (
+        f'DROP INDEX "{pending_index}"' if dialect == "postgres" else f"DROP INDEX `{pending_index}` ON `{table}`"
+    )
+    manager = SQLSpec()
+    try:
+        await _run_configured_migrations(config, queue_table_name=table)
+        async with manager.provide_session(config) as driver:
+            await driver.execute_script(drop_index_sql)
+            await driver.commit()
+
+        await _run_configured_migrations(config, queue_table_name=table)
+        async with manager.provide_session(config) as driver:
+            if dialect == "postgres":
+                rows = await driver.select(
+                    "SELECT indexname AS idx FROM pg_indexes WHERE schemaname = :schema AND tablename = :table",
+                    {"schema": schema_name, "table": table},
+                )
+            else:
+                rows = await driver.select(
+                    "SELECT DISTINCT index_name AS idx FROM information_schema.statistics "
+                    "WHERE table_schema = :schema AND table_name = :table",
+                    {"schema": schema_name, "table": table},
+                )
+            companion_names = {
+                str(row["idx"])
+                for row in rows
+                if str(row["idx"]) != "PRIMARY" and not str(row["idx"]).endswith("_pkey")
+            }
+            assert pending_index in companion_names
+            assert any("pending" in name for name in companion_names)
+            assert len(companion_names) >= 3
+    finally:
+        async with manager.provide_session(config) as driver:
+            if dialect == "postgres":
+                await driver.execute_script(_drop_postgres_tables_sql(table, tracking))
+            else:
+                await _execute_all(driver, _drop_mysql_tables_sql(table, tracking))
+            await driver.commit()
+        await config.close_pool()
+        await manager.close_all_pools()
+
+
+async def _verify_mysql_foreign_same_name_index(request: "FixtureRequest") -> "None":
+    if _AsyncmyConfig is None:
+        pytest.skip("asyncmy adapter is not installed")
+    try:
+        mysql_svc = request.getfixturevalue("mysql_service")
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Docker service not available: {exc}")
+    table = table_name_for_test("lq_fidx", "asyncmy", request.node.nodeid)
+    foreign_table = f"{table[:44]}_other"
+    tracking = f"{table[:44]}_mig"
+    config = _AsyncmyConfig(
+        connection_config={
+            "host": mysql_svc.host,
+            "port": mysql_svc.port,
+            "user": mysql_svc.user,
+            "password": mysql_svc.password,
+            "database": mysql_svc.db,
+        },
+        migration_config={"version_table_name": tracking},
+    )
+    pending_index = create_queue_store(config, table_name=table)._index_name("pending")
+    manager = SQLSpec()
+    try:
+        async with manager.provide_session(config) as driver:
+            await driver.execute_script(f"CREATE TABLE `{foreign_table}` (`x` VARCHAR(32))")
+            await driver.execute_script(f"CREATE INDEX `{pending_index}` ON `{foreign_table}` (`x`)")
+            await driver.commit()
+
+        await _run_configured_migrations(config, queue_table_name=table)
+        async with manager.provide_session(config) as driver:
+            await driver.execute_script(f"DROP INDEX `{pending_index}` ON `{table}`")
+            await driver.commit()
+
+        await _run_configured_migrations(config, queue_table_name=table)
+        async with manager.provide_session(config) as driver:
+            rows = await driver.select(
+                "SELECT DISTINCT table_name AS tbl FROM information_schema.statistics "
+                "WHERE table_schema = :schema AND index_name = :idx",
+                {"schema": mysql_svc.db, "idx": pending_index},
+            )
+            assert {str(row["tbl"]) for row in rows} == {table, foreign_table}
+    finally:
+        async with manager.provide_session(config) as driver:
+            await _execute_all(
+                driver, [*_drop_mysql_tables_sql(table, tracking), f"DROP TABLE IF EXISTS `{foreign_table}`"]
+            )
+            await driver.commit()
+        await config.close_pool()
+        await manager.close_all_pools()
+
+
+async def _verify_postgres_foreign_same_name_index(request: "FixtureRequest", *, same_schema: "bool") -> "None":
+    if _AsyncpgConfig is None:
+        pytest.skip("asyncpg adapter is not installed")
+    try:
+        pg_svc = request.getfixturevalue("postgres_service")
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Docker service not available: {exc}")
+
+    base = table_name_for_test("lq_pg_fidx", "asyncpg", request.node.nodeid)[:36]
+    target_schema = f"{base}_app"
+    foreign_schema = target_schema if same_schema else f"{base}_other"
+    qualified_table = f"{target_schema}.queue_task"
+    pg_config = _AsyncpgConfig(
+        connection_config={
+            "host": pg_svc.host,
+            "port": pg_svc.port,
+            "user": pg_svc.user,
+            "password": pg_svc.password,
+            "database": pg_svc.database,
+        },
+        migration_config={"version_table_name": f"{target_schema}.ddl_migrations"},
+    )
+    pending_index = create_queue_store(pg_config, table_name=qualified_table)._index_name("pending")
+    manager = SQLSpec()
+    try:
+        async with manager.provide_session(pg_config) as driver:
+            await driver.execute_script(f'CREATE SCHEMA IF NOT EXISTS "{target_schema}"')
+            await driver.execute_script(f'CREATE SCHEMA IF NOT EXISTS "{foreign_schema}"')
+            await driver.execute_script(f'CREATE TABLE "{foreign_schema}"."other_tbl" (x TEXT)')
+            await driver.execute_script(f'CREATE INDEX "{pending_index}" ON "{foreign_schema}"."other_tbl" (x)')
+            await driver.commit()
+
+        if same_schema:
+            with pytest.raises(MigrationError):
+                await _run_configured_migrations(pg_config, queue_table_name=qualified_table)
+        else:
+            await _run_configured_migrations(pg_config, queue_table_name=qualified_table)
+            async with manager.provide_session(pg_config) as driver:
+                await driver.execute_script(f'DROP INDEX "{target_schema}"."{pending_index}"')
+                await driver.commit()
+            await _run_configured_migrations(pg_config, queue_table_name=qualified_table)
+            async with manager.provide_session(pg_config) as driver:
+                rows = await driver.select(
+                    "SELECT schemaname FROM pg_indexes WHERE indexname = :idx", {"idx": pending_index}
+                )
+                assert {str(row["schemaname"]) for row in rows} == {target_schema, foreign_schema}
+    finally:
+        async with manager.provide_session(pg_config) as driver:
+            await driver.execute_script(f'DROP SCHEMA IF EXISTS "{target_schema}" CASCADE')
+            await driver.execute_script(f'DROP SCHEMA IF EXISTS "{foreign_schema}" CASCADE')
+            await driver.commit()
+        await pg_config.close_pool()
+        await manager.close_all_pools()
+
+
+@pytest.mark.parametrize("scenario", ["mysql_same_schema", "postgres_cross_schema", "postgres_same_schema"])
+async def test_reconcile_foreign_same_name_index_mysql_and_postgres(
+    request: "FixtureRequest", scenario: "str"
+) -> "None":
+    if scenario == "mysql_same_schema":
+        await _verify_mysql_foreign_same_name_index(request)
+    else:
+        await _verify_postgres_foreign_same_name_index(request, same_schema=(scenario == "postgres_same_schema"))
+
+
+@pytest.mark.xdist_group("cockroachdb_service")
+async def test_reconcile_cockroachdb_terminal_ttl_convergence(request: "FixtureRequest") -> "None":
+    if _CockroachAsyncpgConfig is None:
+        pytest.skip("cockroach_asyncpg adapter is not installed")
+    try:
+        cockroach_service = request.getfixturevalue("cockroachdb_service")
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Docker service not available: {exc}")
+
+    table = table_name_for_test("lq_crdb_ttl", "crdb", request.node.nodeid)
+    tracking = f"{table[:48]}_mig"
+    config = _CockroachAsyncpgConfig(
+        connection_config={
+            "host": cockroach_service.host,
+            "port": cockroach_service.port,
+            "user": "root",
+            "password": "",
+            "database": cockroach_service.database,
+            "ssl": False,
+        },
+        migration_config={"version_table_name": tracking},
+    )
+    manager = SQLSpec()
+
+    async def _create_statement_text() -> "str":
+        async with manager.provide_session(config) as driver:
+            row = await driver.select_one_or_none(f'SHOW CREATE TABLE "{table}"')
+            assert row is not None
+            return str(row.get("create_statement") or next(reversed(tuple(row.values()))))
+
+    try:
+        await _run_configured_migrations(config, queue_table_name=table, terminal_ttl=None)
+        ddl_none = await _create_statement_text()
+        assert "ttl_expiration_expression" not in ddl_none
+
+        await _run_configured_migrations(config, queue_table_name=table, terminal_ttl=3600.0)
+        ddl_3600 = await _create_statement_text()
+        assert "ttl_expiration_expression" in ddl_3600
+        assert "3600" in ddl_3600 or "01:00:00" in ddl_3600
+
+        await _run_configured_migrations(config, queue_table_name=table, terminal_ttl=7200.0)
+        ddl_7200 = await _create_statement_text()
+        assert "ttl_expiration_expression" in ddl_7200
+        assert "7200" in ddl_7200 or "02:00:00" in ddl_7200
+
+        await _run_configured_migrations(config, queue_table_name=table, terminal_ttl=None)
+        ddl_reset = await _create_statement_text()
+        assert "ttl_expiration_expression" not in ddl_reset
+    finally:
+        async with manager.provide_session(config) as driver:
+            await driver.execute_script(_drop_postgres_tables_sql(table, tracking))
+            await driver.commit()
+        await config.close_pool()
+        await manager.close_all_pools()
+
+
+async def test_reconcile_supports_third_party_queue_store_class(tmp_path: "Path") -> "None":
+    if _AiosqliteConfig is None:
+        pytest.skip("aiosqlite adapter is not installed")
+
+    custom_config_cls = cast(
+        "Any",
+        type(
+            "CustomThirdPartySqliteConfig",
+            (_AiosqliteConfig,),
+            {
+                "__module__": "external_vendor.sqlite_adapter",
+                "adapter_name": "custom_sqlite",
+                "queue_store_class": _CustomThirdPartySqliteStore,
+            },
+        ),
+    )
+    db_path = tmp_path / "third_party_store.db"
+    config = custom_config_cls(connection_config={"database": str(db_path)})
+    expected_tables = {
+        "queue_task",
+        event_history_table_name_for("queue_task"),
+        maintenance_table_name_for("queue_task"),
+        task_reservation_table_name_for("queue_task"),
+    }
+    try:
+        assert isinstance(create_queue_store(config), _CustomThirdPartySqliteStore)
+        await _run_configured_migrations(config, event_history_enabled=True)
+
+        with contextlib.closing(sqlite3.connect(db_path)) as connection:
+            tables = {
+                row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }
+            indexes = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'queue_task'"
+                ).fetchall()
+            }
+            ext_rows = connection.execute(
+                "SELECT version_num FROM ddl_migrations WHERE version_num LIKE 'ext_litestar_queues_%'"
+            ).fetchall()
+
+        assert expected_tables.issubset(tables)
+        assert any("pending" in name for name in indexes)
+        assert len(indexes) >= 3
+        assert ext_rows == []
+
+        await _run_configured_migrations(config, direction="down", revision="base", event_history_enabled=True)
+        with contextlib.closing(sqlite3.connect(db_path)) as connection:
+            tables_after = {
+                row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }
+        assert expected_tables.isdisjoint(tables_after)
+    finally:
+        await config.close_pool()
+
+
+def _unsupported_reconcile_config(case_id: "str") -> "Any":
+    if case_id == "spanner":
+        if _SpannerSyncConfig is not None:
+            return _SpannerSyncConfig(connection_config={"project": "demo", "instance_id": "inst", "database_id": "db"})
+        return _fake_adapter_config("spanner", dialect="spanner")
+    if case_id == "db2":
+        return _fake_adapter_config("db2", dialect="db2")
+    if case_id == "adbc_flightsql":
+        if _AdbcConfig is not None:
+            return _AdbcConfig(connection_config={"driver_name": "adbc_driver_flightsql"})
+        return _fake_adapter_config(
+            "adbc", config_type_name="AdbcConfig", connection_config={"driver_name": "adbc_driver_flightsql"}
+        )
+    if case_id == "adbc_postgresql":
+        if _AdbcConfig is not None:
+            return _AdbcConfig(
+                connection_config={"driver_name": "adbc_driver_postgresql", "uri": "postgresql://localhost/app"}
+            )
+        return _fake_adapter_config(
+            "adbc",
+            dialect="postgres",
+            config_type_name="AdbcConfig",
+            connection_config={"driver_name": "adbc_driver_postgresql"},
+        )
+    if case_id == "adbc_duckdb":
+        if _AdbcConfig is not None:
+            return _AdbcConfig(connection_config={"driver_name": "duckdb"})
+        return _fake_adapter_config(
+            "adbc", dialect="duckdb", config_type_name="AdbcConfig", connection_config={"driver_name": "duckdb"}
+        )
+    if case_id == "arrow_odbc_db2":
+        return _fake_adapter_config("arrow_odbc", dialect="db2", config_type_name="ArrowOdbcConfig")
+    return _fake_adapter_config("arrow_odbc", dialect="postgres", config_type_name="ArrowOdbcConfig")
+
+
+@pytest.mark.parametrize("action", ["reconcile", "downgrade"])
+@pytest.mark.parametrize(
+    "case_id",
+    ["spanner", "db2", "adbc_flightsql", "adbc_postgresql", "adbc_duckdb", "arrow_odbc_db2", "arrow_odbc_postgres"],
+)
+async def test_reconcile_and_downgrade_refuse_unsupported_adapters(action: "str", case_id: "str") -> "None":
+    config = _unsupported_reconcile_config(case_id)
+    driver = MagicMock()
+    driver.execute.side_effect = AssertionError("DDL execute must not be called for refused adapters")
+    driver.execute_script.side_effect = AssertionError("DDL execute_script must not be called for refused adapters")
+    context = cast(
+        "MigrationContext", SimpleNamespace(config=config, driver=driver, is_async_driver=False, extension_config={})
+    )
+    target_fn = reconcile if action == "reconcile" else downgrade
+
+    with pytest.raises(MigrationError):
+        target_fn(context)
