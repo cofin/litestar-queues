@@ -1,7 +1,9 @@
 """Internal typing helpers for the SQLSpec queue backend."""
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, TypeAlias, cast
+
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -11,12 +13,16 @@ if TYPE_CHECKING:
     from sqlspec.adapters.sqlite import SqliteConfig
 
 __all__ = (
+    "DEFAULT_MIGRATION_MODE",
+    "VALID_MIGRATION_MODES",
     "DatetimeParam",
+    "ExtensionMigrationMode",
     "SQLSpecConfig",
     "SQLSpecDriver",
     "SQLSpecManager",
     "SQLSpecSessionConfig",
     "SQLSpecStoreConfig",
+    "validate_migration_mode",
 )
 
 
@@ -30,7 +36,12 @@ class SQLSpecConfig(Protocol):
     supports_reliable_rowcount: ClassVar[bool]
 
     def add_extension_migrations(
-        self, name: str, migrations_path: "str | Path", settings: "dict[str, Any] | None" = None
+        self,
+        name: str,
+        migrations_path: "str | Path",
+        settings: "dict[str, Any] | None" = None,
+        *,
+        migration_mode: "ExtensionMigrationMode | None" = None,
     ) -> None: ...
 
     def remove_extension_migrations(self, name: str) -> bool: ...
@@ -98,3 +109,19 @@ if TYPE_CHECKING:
 
 
 DatetimeParam: TypeAlias = datetime | str
+ExtensionMigrationMode: TypeAlias = Literal["versioned", "reconcile"]
+VALID_MIGRATION_MODES: "frozenset[str]" = frozenset({"versioned", "reconcile"})
+DEFAULT_MIGRATION_MODE: "ExtensionMigrationMode" = "versioned"
+
+
+def validate_migration_mode(migration_mode: "object") -> "ExtensionMigrationMode":
+    """Validate SQLSpec extension migration mode and reject booleans or unknown strings."""
+    if (
+        isinstance(migration_mode, bool)
+        or not isinstance(migration_mode, str)
+        or migration_mode not in VALID_MIGRATION_MODES
+    ):
+        valid = ", ".join(sorted(VALID_MIGRATION_MODES))
+        msg = f"Invalid SQLSpec migration_mode {migration_mode!r}; expected one of: {valid}."
+        raise QueueConfigurationError(msg)
+    return cast("ExtensionMigrationMode", migration_mode)
