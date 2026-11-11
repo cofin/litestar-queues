@@ -28,11 +28,7 @@ _APPROVED_NESTED_IMPORTS = {
     "backends/redis/backend.py": {"redis"},
     "backends/redis/event_log.py": {"litestar_queues.events.history", "litestar_queues.events.query"},
     "backends/sqlspec/backend.py": {"duckdb", "sqlspec.adapters.aiosqlite"},
-    "backends/sqlspec/config.py": {
-        "litestar_queues.backends.sqlspec.backend",
-        "litestar_queues.backends.sqlspec.extension",
-        "litestar_queues.backends.sqlspec.schema",
-    },
+    "backends/sqlspec/config.py": {"litestar_queues.backends.sqlspec.backend"},
     "backends/sqlspec/event_log.py": {"litestar_queues.events.query", "litestar_queues.events.typing"},
     "backends/sqlspec/event_sink.py": {"sqlspec", "sqlspec.adapters.aiosqlite"},
     "backends/sqlspec/maintenance.py": {"litestar_queues.backends.sqlspec.stores.spanner"},
