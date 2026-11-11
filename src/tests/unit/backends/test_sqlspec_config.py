@@ -8,8 +8,18 @@ pytest.importorskip("sqlspec")
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend, SQLSpecWorkerWakeupConfig
+from litestar_queues.backends.sqlspec import extension as sqlspec_extension
 from litestar_queues.backends.sqlspec import typing as sqlspec_typing
-from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
+from litestar_queues.backends.sqlspec.extension import (
+    DEFAULT_MIGRATION_MODE,
+    QUEUE_EXTENSION_NAME,
+    VALID_MIGRATION_MODES,
+    configure_events_migration_extension,
+    configure_queue_migration_extension,
+    queue_migration_directory,
+    validate_migration_mode,
+)
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueuedTaskRecord
 
 if TYPE_CHECKING:
@@ -484,3 +494,197 @@ def test_sqlspec_config_protocol_add_extension_migrations_signature(
     assert parameter.kind is expected_kind
     assert parameter.default is expected_default
     assert parameter.annotation == expected_annotation
+
+
+class _SpySQLSpecConfig:
+    """Minimal spy double recording extension migration calls and config mutations."""
+
+    __slots__ = ("calls", "extension_config", "migration_config", "removed")
+
+    def __init__(self, extension_config: "dict[str, Any] | None" = None) -> None:
+        self.extension_config: dict[str, Any] = {} if extension_config is None else dict(extension_config)
+        self.migration_config: dict[str, Any] = {}
+        self.calls: list[tuple[str, Any, dict[str, Any] | None, Any]] = []
+        self.removed: list[str] = []
+
+    def add_extension_migrations(
+        self, name: str, migrations_path: Any, settings: "dict[str, Any] | None" = None, *, migration_mode: Any = None
+    ) -> None:
+        self.calls.append((name, migrations_path, None if settings is None else dict(settings), migration_mode))
+        merged = dict(self.extension_config.get(name) or {})
+        if settings:
+            merged.update(settings)
+        merged["migrations_path"] = migrations_path
+        if migration_mode is not None:
+            merged["migration_mode"] = migration_mode
+        self.extension_config[name] = merged
+
+    def remove_extension_migrations(self, name: str) -> bool:
+        self.removed.append(name)
+        return self.extension_config.pop(name, None) is not None
+
+
+@pytest.mark.parametrize(
+    ("symbol_name", "expected_value"),
+    [("DEFAULT_MIGRATION_MODE", "versioned"), ("VALID_MIGRATION_MODES", frozenset({"versioned", "reconcile"}))],
+)
+def test_extension_module_exports_migration_mode_constants(symbol_name: str, expected_value: Any) -> None:
+    """The SQLSpec extension module exports migration mode defaults, valid set, and validator."""
+    assert symbol_name in sqlspec_extension.__all__
+    assert "validate_migration_mode" in sqlspec_extension.__all__
+    assert getattr(sqlspec_extension, symbol_name) == expected_value
+
+
+@pytest.mark.parametrize("mode", ["versioned", "reconcile"])
+def test_validate_migration_mode_accepts_valid_modes(mode: str) -> None:
+    """validate_migration_mode returns valid literal mode strings unchanged."""
+    assert validate_migration_mode(mode) == mode
+    assert mode in VALID_MIGRATION_MODES
+
+
+@pytest.mark.parametrize("bad_mode", [True, False, None, "", "auto", 123])
+def test_validate_migration_mode_rejects_invalid_values(bad_mode: Any) -> None:
+    """validate_migration_mode rejects booleans, None, and unknown mode strings."""
+    with pytest.raises(QueueConfigurationError, match="Invalid SQLSpec migration_mode"):
+        validate_migration_mode(bad_mode)
+
+
+@pytest.mark.parametrize("bad_mode", [True, False, "", "auto", 123])
+@pytest.mark.parametrize("manage_schema", [True, False])
+@pytest.mark.parametrize("backend", ["poll_queue", None])
+def test_configure_events_migration_extension_rejects_invalid_migration_mode_immediately(
+    bad_mode: Any, manage_schema: bool, backend: "str | None"
+) -> None:
+    """Invalid non-None migration_mode fails before removal or early return."""
+    spy_cfg = _SpySQLSpecConfig({"events": {"backend": "custom"}})
+
+    with pytest.raises(QueueConfigurationError, match="Invalid SQLSpec migration_mode"):
+        configure_events_migration_extension(
+            cast("Any", spy_cfg), backend=backend, manage_schema=manage_schema, migration_mode=bad_mode
+        )
+
+    assert spy_cfg.calls == []
+    assert spy_cfg.removed == []
+    assert spy_cfg.extension_config == {"events": {"backend": "custom"}}
+
+
+@pytest.mark.parametrize("bad_mode", [True, False, "", "auto", 123])
+@pytest.mark.parametrize("manage_schema", [True, False])
+def test_configure_queue_migration_extension_rejects_invalid_migration_mode_immediately(
+    bad_mode: Any, manage_schema: bool
+) -> None:
+    """Invalid non-None migration_mode fails before queue registration or removal."""
+    spy_cfg = _SpySQLSpecConfig({QUEUE_EXTENSION_NAME: {"queue_table_name": "existing"}})
+
+    with pytest.raises(QueueConfigurationError, match="Invalid SQLSpec migration_mode"):
+        configure_queue_migration_extension(cast("Any", spy_cfg), manage_schema=manage_schema, migration_mode=bad_mode)
+
+    assert spy_cfg.calls == []
+    assert spy_cfg.removed == []
+    assert spy_cfg.extension_config == {QUEUE_EXTENSION_NAME: {"queue_table_name": "existing"}}
+
+
+@pytest.mark.parametrize("mode", [None, "versioned", "reconcile"])
+def test_configure_events_migration_extension_forwards_migration_mode_spy(mode: Any) -> None:
+    """configure_events_migration_extension resolves None and forwards migration_mode via add_extension_migrations."""
+    spy_cfg = _SpySQLSpecConfig()
+    expected_mode = DEFAULT_MIGRATION_MODE if mode is None else mode
+
+    configure_events_migration_extension(
+        cast("Any", spy_cfg), backend="poll_queue", queue_table="custom_events", migration_mode=mode
+    )
+
+    assert spy_cfg.calls == [
+        (
+            "events",
+            "sqlspec.extensions.events:migrations",
+            {"backend": "poll_queue", "queue_table": "custom_events"},
+            expected_mode,
+        )
+    ]
+    assert spy_cfg.extension_config["events"] == {
+        "backend": "poll_queue",
+        "queue_table": "custom_events",
+        "migrations_path": "sqlspec.extensions.events:migrations",
+        "migration_mode": expected_mode,
+    }
+
+
+@pytest.mark.parametrize("mode", [None, "versioned", "reconcile"])
+def test_configure_queue_migration_extension_forwards_migration_mode_spy(mode: Any) -> None:
+    """configure_queue_migration_extension resolves None and forwards migration_mode via add_extension_migrations."""
+    spy_cfg = _SpySQLSpecConfig()
+    expected_mode = DEFAULT_MIGRATION_MODE if mode is None else mode
+
+    configure_queue_migration_extension(cast("Any", spy_cfg), queue_table_name="jobs", migration_mode=mode)
+
+    assert len(spy_cfg.calls) == 1
+    name, migrations_path, settings, recorded_mode = spy_cfg.calls[0]
+    assert name == QUEUE_EXTENSION_NAME
+    assert migrations_path == queue_migration_directory()
+    assert settings is not None
+    assert settings["queue_table_name"] == "jobs"
+    assert settings["maintenance_table_name"] == "jobs_maintenance"
+    assert settings["task_reservation_table_name"] == "jobs_reservation"
+    assert recorded_mode == expected_mode
+    assert spy_cfg.extension_config[QUEUE_EXTENSION_NAME]["migration_mode"] == expected_mode
+
+
+@pytest.mark.parametrize("mode", [None, "versioned", "reconcile"])
+def test_configure_events_preserves_custom_migrations_path_and_none_backend(mode: Any) -> None:
+    """Adopter events migrations_path is forwarded and backend=None leaves adopter config untouched."""
+    expected_mode = DEFAULT_MIGRATION_MODE if mode is None else mode
+    custom_cfg = _SpySQLSpecConfig({"events": {"migrations_path": "custom.pkg:migrations"}})
+
+    configure_events_migration_extension(cast("Any", custom_cfg), backend="poll_queue", migration_mode=mode)
+
+    assert custom_cfg.calls == [
+        (
+            "events",
+            "custom.pkg:migrations",
+            {"migrations_path": "custom.pkg:migrations", "backend": "poll_queue"},
+            expected_mode,
+        )
+    ]
+
+    preserved_cfg = _SpySQLSpecConfig({"events": {"backend": "custom", "migrations_path": "adopter.pkg:migrations"}})
+    configure_events_migration_extension(cast("Any", preserved_cfg), backend=None, migration_mode=mode)
+
+    assert preserved_cfg.calls == []
+    assert preserved_cfg.removed == []
+    assert preserved_cfg.extension_config == {
+        "events": {"backend": "custom", "migrations_path": "adopter.pkg:migrations"}
+    }
+
+
+@pytest.mark.parametrize("mode", [None, "versioned", "reconcile"])
+def test_configure_extensions_manage_schema_false_removes_without_adding(mode: Any) -> None:
+    """manage_schema=False removes registrations without writing stale migration_mode."""
+    spy_cfg = _SpySQLSpecConfig({
+        "events": {"backend": "poll_queue", "migration_mode": "reconcile"},
+        QUEUE_EXTENSION_NAME: {"queue_table_name": "jobs", "migration_mode": "reconcile"},
+    })
+
+    configure_events_migration_extension(
+        cast("Any", spy_cfg), backend="poll_queue", manage_schema=False, migration_mode=mode
+    )
+    configure_queue_migration_extension(cast("Any", spy_cfg), manage_schema=False, migration_mode=mode)
+
+    assert spy_cfg.calls == []
+    assert spy_cfg.removed == ["events", QUEUE_EXTENSION_NAME]
+    assert spy_cfg.extension_config == {}
+
+
+@pytest.mark.parametrize("mode", [None, "versioned"])
+def test_aiosqlite_versioned_get_migration_commands_includes_migration_mode(mode: Any) -> None:
+    """Live AiosqliteConfig registers versioned queue and events migrations with explicit migration_mode."""
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+
+    configure_events_migration_extension(sqlspec_config, backend="poll_queue", migration_mode=mode)
+    configure_queue_migration_extension(sqlspec_config, migration_mode=mode)
+
+    commands = sqlspec_config.get_migration_commands()
+    assert commands.extension_configs["events"]["migration_mode"] == "versioned"
+    assert commands.extension_configs[QUEUE_EXTENSION_NAME]["migration_mode"] == "versioned"
+    assert "events" in commands.runner.extension_migrations
+    assert QUEUE_EXTENSION_NAME in commands.runner.extension_migrations
