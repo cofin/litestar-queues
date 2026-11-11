@@ -528,8 +528,61 @@ async def test_redis_list_tasks_batches_hmget_over_500_candidates() -> "None":
     assert client.pipeline_execute_calls == 3
 
 
+@pytest.mark.parametrize(
+    ("status", "queue", "expected_ids"),
+    [
+        ("completed", None, ("done-2", "done-1")),
+        ("completed", "emails", ("done-1",)),
+        (("completed", "failed"), None, ("fail-1", "done-2", "done-1")),
+        (("completed", "failed"), "emails", ("fail-1", "done-1")),
+    ],
+)
+async def test_redis_list_tasks_handles_resp2_list_and_none_replies(
+    status: "TaskStatus | Sequence[TaskStatus]", queue: "str | None", expected_ids: "tuple[str, ...]"
+) -> "None":
+    client = _CountingRedisClient(resp2_list_replies=True, simulate_missing_hmget_none=True)
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client)))
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    records = {
+        "done-1": QueuedTaskRecord(
+            id=UUID(int=1),
+            task_name="tasks.resp2",
+            status="completed",
+            queue="emails",
+            created_at=base + timedelta(seconds=1),
+        ),
+        "done-2": QueuedTaskRecord(
+            id=UUID(int=2),
+            task_name="tasks.resp2",
+            status="completed",
+            queue="reports",
+            created_at=base + timedelta(seconds=2),
+        ),
+        "fail-1": QueuedTaskRecord(
+            id=UUID(int=3),
+            task_name="tasks.resp2",
+            status="failed",
+            queue="emails",
+            created_at=base + timedelta(seconds=3),
+        ),
+    }
+    _seed_listing_tasks(client, backend, tuple(records.values()))
+    ghost_id = str(uuid4())
+    for status_name in ("completed", "failed"):
+        client.sets[backend._status_key(status_name)].add(ghost_id)
+    client.sets[backend._queue_index_key("emails")].add(ghost_id)
+    client.sets[backend._tasks_key].add(ghost_id)
+
+    page = await backend.list_tasks(status=status, queue=queue)
+
+    assert [item.id for item in page.items] == [records[name].id for name in expected_ids]
+    assert page.total == len(expected_ids)
+
+
 class _CountingRedisClient:
-    def __init__(self) -> "None":
+    def __init__(self, *, resp2_list_replies: "bool" = False, simulate_missing_hmget_none: "bool" = False) -> "None":
+        self.resp2_list_replies = resp2_list_replies
+        self.simulate_missing_hmget_none = simulate_missing_hmget_none
         self.hashes: "dict[str, dict[str, str]]" = {}
         self.sets: "dict[str, builtins.set[str]]" = {}
         self.strings: "dict[str, str]" = {}
@@ -586,19 +639,18 @@ class _CountingRedisClient:
         self.scard_calls += 1
         return len(self.sets.get(key, set()))
 
-    async def smembers(self, key: "str") -> "builtins.set[str]":
+    async def smembers(self, key: "str") -> "builtins.set[str] | list[str]":
         self.smembers_calls += 1
-        return self.sets.get(key, builtins.set())
+        members = self.sets.get(key, builtins.set())
+        return sorted(members) if self.resp2_list_replies else members
 
-    async def sinter(self, *keys: "Any") -> "builtins.set[str]":
-        return self._sinter_sets(keys)
+    async def sinter(self, *keys: "Any") -> "builtins.set[str] | list[str]":
+        members = self._sinter_sets(keys)
+        return sorted(members) if self.resp2_list_replies else members
 
-    async def sunion(self, *keys: "Any") -> "builtins.set[str]":
-        return self._sunion_sets(keys)
-
-    async def hmget(self, name: "str", keys: "str | Sequence[str]", *args: "str") -> "list[str | None]":
-        fields = [keys, *args] if isinstance(keys, str) else [*keys, *args]
-        return self._hmget_values(name, fields)
+    async def sunion(self, *keys: "Any") -> "builtins.set[str] | list[str]":
+        members = self._sunion_sets(keys)
+        return sorted(members) if self.resp2_list_replies else members
 
     def _sinter_sets(self, keys: "tuple[Any, ...]") -> "builtins.set[str]":
         self.sinter_calls += 1
@@ -617,8 +669,10 @@ class _CountingRedisClient:
             result.update(self.sets.get(key, builtins.set()))
         return result
 
-    def _hmget_values(self, name: "str", fields: "Sequence[str]") -> "list[str | None]":
-        mapping = self.hashes.get(name, {})
+    def _hmget_values(self, name: "str", fields: "Sequence[str]") -> "list[str | None] | None":
+        mapping = self.hashes.get(name)
+        if mapping is None:
+            return None if self.simulate_missing_hmget_none else [None for _ in fields]
         return [mapping.get(field) for field in fields]
 
     @staticmethod

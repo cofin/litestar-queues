@@ -18,7 +18,9 @@ from litestar_queues import (
     WorkerConfig,
     task,
 )
+from litestar_queues import models as models_module
 from litestar_queues.backends import InMemoryQueueBackend
+from litestar_queues.backends.memory import backend as memory_backend_module
 from litestar_queues.events import QueueEventPublisher, QueueEventsConfig
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import TaskListPage
@@ -1081,14 +1083,12 @@ async def test_queue_service_list_tasks_advanced_alchemy_and_memory_parity(
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
     from sqlalchemy import MetaData
 
-    from litestar_queues import models as models_module
     from litestar_queues.backends.advanced_alchemy import (
         QueueTaskModelMixin,
         SQLAlchemyBackend,
         SQLAlchemyBackendConfig,
     )
     from litestar_queues.backends.advanced_alchemy import service as advanced_alchemy_service_module
-    from litestar_queues.backends.memory import backend as memory_backend_module
     from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
 
     clear_task_registry()
