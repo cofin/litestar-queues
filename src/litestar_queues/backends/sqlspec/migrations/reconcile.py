@@ -23,7 +23,15 @@ if TYPE_CHECKING:
 
     from sqlspec.migrations.context import MigrationContext
 
-__all__ = ("down", "downgrade", "reconcile", "reconcile_stores_async", "reconcile_stores_sync")
+__all__ = (
+    "down",
+    "downgrade",
+    "reconcile",
+    "reconcile_events_queue_async",
+    "reconcile_events_queue_sync",
+    "reconcile_stores_async",
+    "reconcile_stores_sync",
+)
 
 _UNSUPPORTED_RECONCILE_ADAPTERS = frozenset({"spanner", "db2"})
 _COCKROACH_ADAPTERS = frozenset({"cockroach_asyncpg", "cockroach_psycopg"})
@@ -76,11 +84,67 @@ async def reconcile_stores_async(
         target = SchemaTarget.from_ddl(store.table_name, ddl, dialect=store.sqlglot_dialect())
         await ensure_schema_async(driver, (target,), manage_schema=True, create_schema=True, commit=False, strict=True)
         await _reconcile_companion_indexes_async(driver, config, store, target)
-        reconcile_options = getattr(store, "reconcile_storage_options_async", None)
-        if callable(reconcile_options):
-            result = reconcile_options(driver)
-            if isawaitable(result):
-                await result
+        await _invoke_optional_async(store, "reconcile_storage_options_async", driver)
+
+
+def reconcile_events_queue_sync(driver: "Any", events_store: "Any", backend_name: "str | None") -> "None":
+    """Reconcile SQLSpec's durable events queue table on a synchronous driver."""
+    manage_schema, create_schema = _resolve_events_schema_flags(events_store)
+    if not manage_schema:
+        return
+    get_schema_targets = getattr(events_store, "get_schema_targets", None)
+    if callable(get_schema_targets):
+        _invoke_optional_sync(events_store, "prepare_schema_sync", driver)
+        targets = cast("Sequence[SchemaTarget]", get_schema_targets())
+        ensure_schema_sync(driver, targets, manage_schema=True, create_schema=create_schema, commit=False, strict=True)
+        _invoke_optional_sync(events_store, "reconcile_companion_objects_sync", driver)
+        native_targets_fn = getattr(events_store, "native_backend_targets", None)
+        if backend_name is not None and callable(native_targets_fn):
+            native_targets = native_targets_fn(backend_name)
+            _invoke_optional_sync(
+                events_store,
+                "reconcile_native_backend_sync",
+                driver,
+                backend_name,
+                native_targets,
+                create_schema=create_schema,
+            )
+        return
+    if create_schema:
+        for statement in events_store.create_statements():
+            if statement.strip():
+                driver.execute_script(statement)
+
+
+async def reconcile_events_queue_async(driver: "Any", events_store: "Any", backend_name: "str | None") -> "None":
+    """Reconcile SQLSpec's durable events queue table on an asynchronous driver."""
+    manage_schema, create_schema = _resolve_events_schema_flags(events_store)
+    if not manage_schema:
+        return
+    get_schema_targets = getattr(events_store, "get_schema_targets", None)
+    if callable(get_schema_targets):
+        await _invoke_optional_async(events_store, "prepare_schema_async", driver)
+        targets = cast("Sequence[SchemaTarget]", get_schema_targets())
+        await ensure_schema_async(
+            driver, targets, manage_schema=True, create_schema=create_schema, commit=False, strict=True
+        )
+        await _invoke_optional_async(events_store, "reconcile_companion_objects_async", driver)
+        native_targets_fn = getattr(events_store, "native_backend_targets", None)
+        if backend_name is not None and callable(native_targets_fn):
+            native_targets = native_targets_fn(backend_name)
+            await _invoke_optional_async(
+                events_store,
+                "reconcile_native_backend_async",
+                driver,
+                backend_name,
+                native_targets,
+                create_schema=create_schema,
+            )
+        return
+    if create_schema:
+        for statement in events_store.create_statements():
+            if statement.strip():
+                await driver.execute_script(statement)
 
 
 def reconcile(context: "MigrationContext") -> "Awaitable[None] | None":
@@ -317,6 +381,28 @@ async def _reconcile_companion_indexes_async(
         await driver.execute_script(ddl)
     after_rows = await driver.data_dictionary.get_indexes(driver, table=target.table_name, schema=query_schema)
     _raise_unresolved_indexes(missing, after_rows, target)
+
+
+def _resolve_events_schema_flags(events_store: "Any") -> "tuple[bool, bool]":
+    flags_fn = getattr(events_store, "_schema_management_flags", None)
+    if callable(flags_fn):
+        manage_schema, create_schema = cast("tuple[bool, bool]", flags_fn())
+        return bool(manage_schema), bool(create_schema)
+    return True, True
+
+
+def _invoke_optional_sync(target: "Any", method_name: "str", *args: "Any", **kwargs: "Any") -> "None":
+    method = getattr(target, method_name, None)
+    if callable(method):
+        method(*args, **kwargs)
+
+
+async def _invoke_optional_async(target: "Any", method_name: "str", *args: "Any", **kwargs: "Any") -> "None":
+    method = getattr(target, method_name, None)
+    if callable(method):
+        result = method(*args, **kwargs)
+        if isawaitable(result):
+            await result
 
 
 def _downgrade_sync(driver: "Any", stores: "Sequence[SQLSpecQueueStore]") -> "None":
