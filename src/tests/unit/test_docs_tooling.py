@@ -76,12 +76,18 @@ def test_scan_public_docstrings_detects_violations(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "subcommand", ["run", "run-consumer", "run-task", "run-maintenance", "status", "scheduler-health"]
+    "subcommand", ["run", "run-consumer", "run-task", "run-maintenance", "status", "list", "scheduler-health"]
 )
 def test_generate_cli_docs_documents_all_subcommands(subcommand: str) -> None:
-    """Verify render_cli_reference includes every litestar queues subcommand."""
+    """Verify render_cli_reference documents and categorizes every litestar queues subcommand."""
     rendered = render_cli_reference()
     assert f"`litestar queues {subcommand}`" in rendered
+    assert "## Additional Commands" not in rendered
+    assert "- list_command" in rendered
+    maintenance_section = rendered.split("## Maintenance, Status & Diagnostics", maxsplit=1)[1].split(
+        "## Public Python CLI Surface", maxsplit=1
+    )[0]
+    assert "### `litestar queues list`" in maintenance_section
 
 
 def test_generate_cli_docs_check_mode(tmp_path: Path) -> None:
