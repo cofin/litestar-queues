@@ -395,19 +395,31 @@ def test_oracle_create_table_and_companion_indexes_split() -> "None":
     assert store.sqlglot_dialect() == "oracle"
     assert "CREATE TABLE queue_tasks_with_a_very_long_name" in table_ddl
     assert "CREATE INDEX" not in table_ddl
-    assert len(indexes) == 3
-    (pending_name, pending_sql), (heartbeat_name, heartbeat_sql), (repair_name, repair_sql) = indexes
+    assert len(indexes) == 5
+    (
+        (pending_name, pending_sql),
+        (heartbeat_name, heartbeat_sql),
+        (repair_name, repair_sql),
+        (created_name, created_sql),
+        (list_name, list_sql),
+    ) = indexes
     assert pending_name.endswith("_pending")
     assert heartbeat_name.endswith("_heartbeat")
     assert repair_name.endswith("_dispatch_repair")
+    assert created_name.endswith("_created")
+    assert list_name.endswith("_list")
     assert len(pending_name) <= 30
     assert len(heartbeat_name) <= 30
     assert len(repair_name) <= 30
-    assert len({pending_name, heartbeat_name, repair_name}) == 3
+    assert len(created_name) <= 30
+    assert len(list_name) <= 30
+    assert len({pending_name, heartbeat_name, repair_name, created_name, list_name}) == 5
     assert f"CREATE INDEX {pending_name}" in pending_sql
     assert f"CREATE INDEX {heartbeat_name}" in heartbeat_sql
     assert f"CREATE INDEX {repair_name}" in repair_sql
-    assert store.create_statements() == [table_ddl, pending_sql, heartbeat_sql, repair_sql]
+    assert f"CREATE INDEX {created_name}" in created_sql
+    assert f"CREATE INDEX {list_name}" in list_sql
+    assert store.create_statements() == [table_ddl, pending_sql, heartbeat_sql, repair_sql, created_sql, list_sql]
 
 
 @pytest.mark.parametrize(
@@ -438,3 +450,80 @@ def test_oracle_manage_schema_false(config_type_name: "str") -> "None":
     assert store.create_table_statement() == ""
     assert store.companion_indexes() == ()
     assert store.create_statements() == []
+    assert store.drop_statements() == []
+
+
+@pytest.mark.parametrize("config_type_name", ("OracleSyncConfig", "OracleAsyncConfig"))
+def test_oracle_listing_index_names_stay_unique_within_30_chars(config_type_name: "str") -> "None":
+    store = create_queue_store(
+        _fake_oracle_config(config_type_name=config_type_name), table_name="queue_tasks_with_a_very_long_name"
+    )
+
+    created_index = store._index_name("created")
+    list_index = store._index_name("list")
+    pending_index = store._index_name("pending")
+    heartbeat_index = store._index_name("heartbeat")
+    repair_index = store._index_name("dispatch_repair")
+
+    assert created_index == "ix_queue_tasks_with_a__created"
+    assert list_index == "ix_queue_tasks_with_a_ver_list"
+    assert len(created_index) <= 30
+    assert len(list_index) <= 30
+    assert len({created_index, list_index, pending_index, heartbeat_index, repair_index}) == 5
+
+
+@pytest.mark.parametrize("config_type_name", ("OracleSyncConfig", "OracleAsyncConfig"))
+@pytest.mark.parametrize(
+    ("column_map", "expected_created_cols", "expected_list_cols"),
+    (
+        (None, "created_at, id", "status, queue, created_at, id"),
+        (
+            {"status": "state", "queue": "lane", "created_at": "created", "id": "task_id"},
+            "created, task_id",
+            "state, lane, created, task_id",
+        ),
+    ),
+)
+def test_oracle_emits_and_drops_listing_indexes_without_desc(
+    config_type_name: "str",
+    column_map: "dict[str, str] | None",
+    expected_created_cols: "str",
+    expected_list_cols: "str",
+) -> "None":
+    store = create_queue_store(
+        _fake_oracle_config(config_type_name=config_type_name), table_name="queue_tasks", column_map=column_map
+    )
+
+    companion = dict(store.companion_indexes())
+    created_sql = companion["ix_queue_tasks_created"]
+    list_sql = companion["ix_queue_tasks_list"]
+
+    assert f"ON queue_tasks({expected_created_cols})" in created_sql
+    assert f"ON queue_tasks({expected_list_cols})" in list_sql
+    assert "DESC" not in created_sql
+    assert "DESC" not in list_sql
+
+    statements = store.create_statements()
+    assert created_sql in statements
+    assert list_sql in statements
+
+    drops = store.drop_statements()
+    drop_table_pos = next(index for index, stmt in enumerate(drops) if "DROP TABLE queue_tasks" in stmt)
+    drop_list_pos = next(index for index, stmt in enumerate(drops) if "DROP INDEX ix_queue_tasks_list" in stmt)
+    drop_created_pos = next(index for index, stmt in enumerate(drops) if "DROP INDEX ix_queue_tasks_created" in stmt)
+    assert drop_list_pos < drop_table_pos
+    assert drop_created_pos < drop_table_pos
+
+
+@pytest.mark.anyio
+async def test_oracle_create_statements_for_driver_includes_listing_indexes() -> "None":
+    store = create_queue_store(_fake_oracle_config(config_type_name="OracleAsyncConfig"), table_name="queue_tasks")
+    assert isinstance(store, OracledbAsyncQueueStore)
+
+    statements = await store.create_statements_for_driver(FakeOracleDriver(FakeOracleVersionInfo(native_json=True)))
+    joined = "\n".join(statements)
+
+    assert "CREATE INDEX ix_queue_tasks_created" in joined
+    assert "ON queue_tasks(created_at, id)" in joined
+    assert "CREATE INDEX ix_queue_tasks_list" in joined
+    assert "ON queue_tasks(status, queue, created_at, id)" in joined

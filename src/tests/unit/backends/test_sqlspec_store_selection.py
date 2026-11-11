@@ -694,7 +694,13 @@ def test_mysql_queue_store_separates_table_ddl_and_companion_indexes() -> "None"
 
     indexes = store.companion_indexes()
     index_map = dict(indexes)
-    assert tuple(index_map) == ("ix_queue_task_pending", "ix_queue_task_dispatch_repair", "ix_queue_task_heartbeat")
+    assert tuple(index_map) == (
+        "ix_queue_task_pending",
+        "ix_queue_task_dispatch_repair",
+        "ix_queue_task_heartbeat",
+        "ix_queue_task_created",
+        "ix_queue_task_list",
+    )
     assert index_map["ix_queue_task_pending"] == (
         "ALTER TABLE `queue_task` ADD INDEX `ix_queue_task_pending` "
         "(`status`(32), `queue`(191), `execution_backend`(191), `scheduled_at`, `priority`, `queued_at`, `created_at`)"
@@ -707,10 +713,19 @@ def test_mysql_queue_store_separates_table_ddl_and_companion_indexes() -> "None"
         index_map["ix_queue_task_heartbeat"]
         == "ALTER TABLE `queue_task` ADD INDEX `ix_queue_task_heartbeat` (`status`(32), `heartbeat_at`)"
     )
+    assert (
+        index_map["ix_queue_task_created"]
+        == "ALTER TABLE `queue_task` ADD INDEX `ix_queue_task_created` (`created_at`, `id`)"
+    )
+    assert (
+        index_map["ix_queue_task_list"]
+        == "ALTER TABLE `queue_task` ADD INDEX `ix_queue_task_list` (`status`(32), `queue`(191), `created_at`, `id`)"
+    )
 
     versioned = store.create_statements()
     assert len(versioned) == 1
-    assert "INDEX " in versioned[0]
+    assert "INDEX `ix_queue_task_created` (`created_at`, `id`)" in versioned[0]
+    assert "INDEX `ix_queue_task_list` (`status`(32), `queue`(191), `created_at`, `id`)" in versioned[0]
 
 
 @pytest.mark.parametrize("adapter", ["pymssql", "mssql_python", "arrow_odbc"])
@@ -1365,3 +1380,217 @@ async def test_reconcile_postgres_delegates_autovacuum_and_isolates_maintenance(
     assert driver.executed == [
         'ALTER TABLE "queue_task" SET (autovacuum_vacuum_scale_factor = 0.05, autovacuum_analyze_scale_factor = 0.02)'
     ]
+
+
+@pytest.mark.parametrize("adapter", ["asyncpg", "psycopg", "psqlpy", "cockroach_asyncpg", "cockroach_psycopg"])
+@pytest.mark.parametrize("table_name", ["queue_task", "app.queue_task"])
+def test_postgres_and_cockroach_emit_and_drop_listing_indexes(adapter: "str", table_name: "str") -> "None":
+    """Postgres and Cockroach stores emit and drop created and list listing indexes."""
+    store = create_queue_store(_fake_config(adapter, dialect="postgres"), table_name=table_name)
+    created_name = f"ix_{table_name.replace('.', '_')}_created"
+    list_name = f"ix_{table_name.replace('.', '_')}_list"
+    quoted_table = '"app"."queue_task"' if "." in table_name else '"queue_task"'
+    expected_created = f'CREATE INDEX IF NOT EXISTS "{created_name}" ON {quoted_table} ("created_at" DESC, "id" DESC)'
+    expected_list = (
+        f'CREATE INDEX IF NOT EXISTS "{list_name}" ON {quoted_table} ("status", "queue", "created_at" DESC, "id" DESC)'
+    )
+
+    companion = dict(store.companion_indexes())
+    assert companion[created_name] == expected_created
+    assert companion[list_name] == expected_list
+
+    created = store.create_statements()
+    assert expected_created in created
+    assert expected_list in created
+
+    drops = store.drop_statements()
+    drop_table_pos = next(index for index, stmt in enumerate(drops) if "DROP TABLE" in stmt)
+    list_drop_pos = next(index for index, stmt in enumerate(drops) if list_name in stmt)
+    created_drop_pos = next(index for index, stmt in enumerate(drops) if created_name in stmt)
+    assert list_drop_pos < drop_table_pos
+    assert created_drop_pos < drop_table_pos
+
+
+@pytest.mark.parametrize("adapter", ["asyncpg", "cockroach_asyncpg"])
+def test_postgres_and_cockroach_cap_listing_index_names_at_63_bytes(adapter: "str") -> "None":
+    """Postgres and Cockroach cap created and list index names at 63 UTF-8 bytes."""
+    long_table = "q" * 62
+    store = create_queue_store(_fake_config(adapter, dialect="postgres"), table_name=long_table)
+    created_name = store._index_name("created")
+    list_name = store._index_name("list")
+    pending_name = store._index_name("pending")
+    scheduled_name = store._index_name("scheduled")
+    heartbeat_name = store._index_name("heartbeat")
+    repair_name = store._index_name("dispatch_repair")
+
+    assert len(created_name.encode("utf-8")) <= 63
+    assert len(list_name.encode("utf-8")) <= 63
+    assert len({created_name, list_name, pending_name, scheduled_name, heartbeat_name, repair_name}) == 6
+    if adapter.startswith("cockroach"):
+        assert len(pending_name.encode("utf-8")) > 63
+        assert len(scheduled_name.encode("utf-8")) > 63
+        assert len(heartbeat_name.encode("utf-8")) > 63
+
+    companion = dict(store.companion_indexes())
+    assert created_name in companion
+    assert list_name in companion
+    assert any(created_name in stmt for stmt in store.create_statements())
+    assert any(list_name in stmt for stmt in store.create_statements())
+    assert any(created_name in stmt for stmt in store.drop_statements())
+    assert any(list_name in stmt for stmt in store.drop_statements())
+
+
+@pytest.mark.parametrize("adapter", ["aiomysql", "asyncmy", "pymysql", "mysqlconnector"])
+def test_mysql_stores_emit_inline_and_companion_listing_indexes(adapter: "str") -> "None":
+    """MySQL stores emit prefixed created and list indexes inline and in companion_indexes without DESC."""
+    store = create_queue_store(_fake_config(adapter, dialect="mysql"), table_name="queue_task")
+
+    assert "INDEX " not in store.create_table_statement()
+
+    companion = dict(store.companion_indexes())
+    assert (
+        companion["ix_queue_task_created"]
+        == "ALTER TABLE `queue_task` ADD INDEX `ix_queue_task_created` (`created_at`, `id`)"
+    )
+    assert companion["ix_queue_task_list"] == (
+        "ALTER TABLE `queue_task` ADD INDEX `ix_queue_task_list` (`status`(32), `queue`(191), `created_at`, `id`)"
+    )
+
+    statements = store.create_statements()
+    assert len(statements) == 1
+    assert "INDEX `ix_queue_task_created` (`created_at`, `id`)" in statements[0]
+    assert "INDEX `ix_queue_task_list` (`status`(32), `queue`(191), `created_at`, `id`)" in statements[0]
+    assert "DESC" not in statements[0]
+    assert any("DROP TABLE" in stmt for stmt in store.drop_statements())
+
+
+@pytest.mark.parametrize("adapter", ["pymssql", "mssql_python"])
+def test_mssql_stores_emit_guarded_listing_indexes_and_drops(adapter: "str") -> "None":
+    """MSSQL stores emit and drop sys.indexes-guarded created and list indexes."""
+    store = create_queue_store(_fake_config(adapter, is_async=False, dialect="mssql"), table_name="queue_task")
+    expected_created = (
+        "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_queue_task_created' "
+        "AND object_id = OBJECT_ID(N'queue_task')) "
+        "CREATE INDEX [ix_queue_task_created] ON [queue_task] ([created_at] DESC, [id] DESC);"
+    )
+    expected_list = (
+        "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_queue_task_list' "
+        "AND object_id = OBJECT_ID(N'queue_task')) "
+        "CREATE INDEX [ix_queue_task_list] ON [queue_task] ([status], [queue], [created_at] DESC, [id] DESC);"
+    )
+
+    companion = dict(store.companion_indexes())
+    assert companion["ix_queue_task_created"] == expected_created
+    assert companion["ix_queue_task_list"] == expected_list
+
+    created = store.create_statements()
+    assert expected_created in created
+    assert expected_list in created
+
+    drops = store.drop_statements()
+    expected_drop_list = (
+        "IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_queue_task_list' "
+        "AND object_id = OBJECT_ID(N'queue_task')) "
+        "DROP INDEX [ix_queue_task_list] ON [queue_task];"
+    )
+    expected_drop_created = (
+        "IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_queue_task_created' "
+        "AND object_id = OBJECT_ID(N'queue_task')) "
+        "DROP INDEX [ix_queue_task_created] ON [queue_task];"
+    )
+    drop_table_pos = next(index for index, stmt in enumerate(drops) if "DROP TABLE [queue_task];" in stmt)
+    assert drops.index(expected_drop_list) < drop_table_pos
+    assert drops.index(expected_drop_created) < drop_table_pos
+
+
+def test_spanner_store_emits_and_drops_listing_indexes() -> "None":
+    """SpannerQueueStore creates listing indexes without IF NOT EXISTS and drops them before DROP TABLE."""
+    store = create_queue_store(_fake_config("spanner", is_async=False, dialect="spanner"), table_name="queue_task")
+    expected_created = "CREATE INDEX `ix_queue_task_created` ON `queue_task` (`created_at` DESC, `id` DESC)"
+    expected_list = (
+        "CREATE INDEX `ix_queue_task_list` ON `queue_task` (`status`, `queue`, `created_at` DESC, `id` DESC)"
+    )
+
+    created = store.create_statements()
+    assert expected_created in created
+    assert expected_list in created
+    assert not any("IF NOT EXISTS" in stmt for stmt in created)
+
+    drops = store.drop_statements()
+    drop_table_pos = drops.index("DROP TABLE `queue_task`")
+    assert drops.index("DROP INDEX `ix_queue_task_list`") < drop_table_pos
+    assert drops.index("DROP INDEX `ix_queue_task_created`") < drop_table_pos
+
+
+@pytest.mark.parametrize(
+    ("adapter", "dialect", "expected_created_cols", "expected_list_cols", "has_companion"),
+    [
+        (
+            "asyncpg",
+            "postgres",
+            '("created" DESC, "task_id" DESC)',
+            '("state", "lane", "created" DESC, "task_id" DESC)',
+            True,
+        ),
+        (
+            "cockroach_asyncpg",
+            "postgres",
+            '("created" DESC, "task_id" DESC)',
+            '("state", "lane", "created" DESC, "task_id" DESC)',
+            True,
+        ),
+        ("aiomysql", "mysql", "(`created`, `task_id`)", "(`state`(32), `lane`(191), `created`, `task_id`)", True),
+        (
+            "pymssql",
+            "mssql",
+            "([created] DESC, [task_id] DESC)",
+            "([state], [lane], [created] DESC, [task_id] DESC)",
+            True,
+        ),
+        (
+            "spanner",
+            "spanner",
+            "(`created` DESC, `task_id` DESC)",
+            "(`state`, `lane`, `created` DESC, `task_id` DESC)",
+            False,
+        ),
+    ],
+)
+def test_dialect_listing_indexes_honor_custom_column_map(
+    adapter: "str", dialect: "str", expected_created_cols: "str", expected_list_cols: "str", has_companion: "bool"
+) -> "None":
+    """Dialect created and list index DDL propagates custom column_map overrides."""
+    column_map = {"status": "state", "queue": "lane", "created_at": "created", "id": "task_id"}
+    store = create_queue_store(
+        _fake_config(adapter, is_async=(adapter not in {"pymssql", "spanner"}), dialect=dialect), column_map=column_map
+    )
+
+    statements_sql = "\n".join(store.create_statements())
+    assert expected_created_cols in statements_sql
+    assert expected_list_cols in statements_sql
+    if has_companion:
+        companion = dict(store.companion_indexes())
+        assert expected_created_cols in companion["ix_queue_task_created"]
+        assert expected_list_cols in companion["ix_queue_task_list"]
+
+
+@pytest.mark.parametrize(
+    ("adapter", "dialect"),
+    [
+        ("asyncpg", "postgres"),
+        ("cockroach_asyncpg", "postgres"),
+        ("pymysql", "mysql"),
+        ("pymssql", "mssql"),
+        ("spanner", "spanner"),
+    ],
+)
+def test_dialect_manage_schema_false_suppresses_drop_statements(adapter: "str", dialect: "str") -> "None":
+    """manage_schema=False suppresses drop_statements alongside create_statements and companion_indexes."""
+    store = create_queue_store(
+        _fake_config(adapter, is_async=(adapter not in {"pymssql", "spanner"}), dialect=dialect), manage_schema=False
+    )
+
+    assert store.create_table_statement() == ""
+    assert store.companion_indexes() == ()
+    assert store.create_statements() == []
+    assert store.drop_statements() == []
