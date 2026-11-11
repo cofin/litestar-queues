@@ -27,6 +27,7 @@ from litestar_queues.backends.base import (
     DispatchRepairCandidates,
     attempts_consumed,
     interruption_count,
+    normalize_task_list_query,
     record_matches_filters,
     retry_schedule,
     stale_requeue_error,
@@ -40,6 +41,7 @@ from litestar_queues.models import (
     QueuedTaskRecord,
     QueueStatistics,
     StaleTaskRecoveryResult,
+    TaskListPage,
     TaskStatus,
 )
 
@@ -529,6 +531,58 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         """Return a queued task record by deduplication key."""
         model = await self._select_task_by_key(key)
         return self.record_from_model(model) if model is not None else None
+
+    async def list_tasks(
+        self,
+        *,
+        status: "TaskStatus | Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+        limit: "int" = 50,
+        offset: "int" = 0,
+    ) -> "TaskListPage":
+        """Return a paginated slice of queued tasks ordered newest first.
+
+        Raises:
+            QueueConfigurationError: If ``status``, ``limit``, or ``offset`` is invalid.
+
+        Returns:
+            A ``TaskListPage`` slice and total match count.
+        """
+        statuses, resolved_limit, resolved_offset = normalize_task_list_query(status=status, limit=limit, offset=offset)
+        if statuses == ():
+            return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=0)
+        model_type = self.model_type
+        criteria: "list[Any]" = []
+        if statuses is not None:
+            if len(statuses) == 1:
+                criteria.append(model_type.status == statuses[0])
+            else:
+                criteria.append(model_type.status.in_(statuses))
+        if queue is not None:
+            criteria.append(model_type.queue == queue)
+        if task_name is not None:
+            criteria.append(model_type.task_name == task_name)
+        if key is not None:
+            criteria.append(model_type.task_key == key)
+        total = int(await self.count(*criteria))
+        if total == 0 or resolved_offset >= total:
+            return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=total)
+        statement = (
+            select(model_type)
+            .where(*criteria)
+            .order_by(desc(model_type.created_at), desc(model_type.id))
+            .offset(resolved_offset)
+            .limit(resolved_limit)
+        )
+        models = await self.get_many(statement=statement)
+        return TaskListPage(
+            items=[self.record_from_model(model) for model in models],
+            limit=resolved_limit,
+            offset=resolved_offset,
+            total=total,
+        )
 
     async def list_pending(
         self, *, limit: "int", queue: "str | None", execution_backend: "str | None"

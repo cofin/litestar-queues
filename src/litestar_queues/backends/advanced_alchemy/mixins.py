@@ -52,6 +52,15 @@ class QueueTaskModelMixin:
                 "created_at",
                 "id",
             ),
+            Index(conv(f"ix_{table}_created"), "created_at", "id"),
+            Index(
+                conv(f"ix_{table}_list"),
+                "status",
+                "queue",
+                "created_at",
+                "id",
+                mysql_length={"status": 32, "queue": 191},
+            ),
         )
 
     @declared_attr
