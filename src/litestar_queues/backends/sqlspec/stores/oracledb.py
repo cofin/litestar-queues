@@ -65,7 +65,10 @@ class _OracledbQueueStore(SQLSpecQueueStore):
 
     async def prepare_schema_async(self, driver: "Any") -> "None":
         """Detect Oracle JSON column storage on the active async or bridged driver."""
-        await self._detect_json_storage_type(driver)
+        if self._json_storage is not None:
+            return
+        version_info = await _oracle_version_info(driver)
+        self._apply_json_storage(_json_storage_from_version_info(version_info))
 
     def create_table_statement(self) -> "str":
         """Return the Oracle PL/SQL ``CREATE TABLE`` block without mutating ``_json_storage``."""
@@ -173,13 +176,6 @@ class _OracledbQueueStore(SQLSpecQueueStore):
             ),
             *(stmt for _, stmt in self.companion_indexes()),
         ]
-
-    async def _detect_json_storage_type(self, driver: "Any") -> "_OracleJSONStorageType":
-        configured = self._json_storage
-        if configured is not None:
-            return configured
-        version_info = await _oracle_version_info(driver)
-        return self._apply_json_storage(_json_storage_from_version_info(version_info))
 
     def _apply_json_storage(self, storage_type: "_OracleJSONStorageType") -> "_OracleJSONStorageType":
         self._json_storage = storage_type

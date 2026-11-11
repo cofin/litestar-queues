@@ -441,7 +441,7 @@ class CockroachQueueStore(PostgresQueueStore):
         if not self._manage_schema:
             return
         row = driver.select_one_or_none(f"SHOW CREATE TABLE {self._quoted_table_name()}")
-        alter_sql = self._cockroach_ttl_alter_statement(_extract_create_statement(row))
+        alter_sql = self._cockroach_ttl_alter_statement(self._extract_create_statement(row))
         if alter_sql is not None:
             driver.execute(alter_sql)
 
@@ -450,7 +450,7 @@ class CockroachQueueStore(PostgresQueueStore):
         if not self._manage_schema:
             return
         row = await driver.select_one_or_none(f"SHOW CREATE TABLE {self._quoted_table_name()}")
-        alter_sql = self._cockroach_ttl_alter_statement(_extract_create_statement(row))
+        alter_sql = self._cockroach_ttl_alter_statement(self._extract_create_statement(row))
         if alter_sql is not None:
             await driver.execute(alter_sql)
 
@@ -483,13 +483,13 @@ class CockroachQueueStore(PostgresQueueStore):
         return f"ttl = 'on', ttl_expiration_expression = '{escaped}'"
 
     def _cockroach_ttl_alter_statement(self, create_statement: "str | None") -> "str | None":
-        ttl_enabled, live_expr = _parse_cockroach_ttl_state(create_statement)
+        ttl_enabled, live_expr = self._parse_cockroach_ttl_state(create_statement)
         if self._terminal_ttl is None:
             if ttl_enabled or live_expr is not None:
                 return f"ALTER TABLE {self._quoted_table_name()} RESET (ttl)"
             return None
         desired_seconds, _ = self._ttl_expiration_expression()
-        if ttl_enabled and _cockroach_ttl_matches(
+        if ttl_enabled and self._cockroach_ttl_matches(
             live_expr,
             desired_seconds=desired_seconds,
             raw_status_col=self._col("status"),
@@ -501,6 +501,160 @@ class CockroachQueueStore(PostgresQueueStore):
 
     def _index_name(self, suffix: "str") -> "str":
         return SQLSpecQueueStore._index_name(self, suffix)
+
+    @staticmethod
+    def _extract_create_statement(row: "Any") -> "str | None":
+        if row is None:
+            return None
+        value: "Any" = None
+        if isinstance(row, Mapping):
+            for key, item in row.items():
+                if isinstance(key, str) and key.lower() == "create_statement":
+                    value = item
+                    break
+        else:
+            value = getattr(row, "create_statement", None)
+            if value is None and hasattr(row, "__dict__"):
+                for key, item in vars(row).items():
+                    if key.lower() == "create_statement":
+                        value = item
+                        break
+            if value is None:
+                value = getattr(row, "CREATE_STATEMENT", None)
+        return str(value) if value is not None else None
+
+    @staticmethod
+    def _parse_cockroach_ttl_state(create_statement: "str | None") -> "tuple[bool, str | None]":
+        if not create_statement:
+            return False, None
+        ttl_enabled = bool(_COCKROACH_TTL_ENABLED_RE.search(create_statement))
+        expr_match = _COCKROACH_TTL_EXPR_RE.search(create_statement)
+        live_expr = expr_match.group(1).replace("''", "'") if expr_match is not None else None
+        return ttl_enabled, live_expr
+
+    @staticmethod
+    def _parse_cockroach_interval_seconds(expr: "str") -> "int | None":
+        interval_match = _COCKROACH_INTERVAL_RE.search(expr)
+        if interval_match is None:
+            return None
+        body = next((group for group in interval_match.groups() if group is not None), "").strip()
+        if not body:
+            return None
+        clock_match = _COCKROACH_CLOCK_INTERVAL_RE.match(body)
+        if clock_match is not None:
+            days = int(clock_match.group(1) or 0)
+            hours = int(clock_match.group(2))
+            minutes = int(clock_match.group(3))
+            seconds = int(clock_match.group(4))
+            return days * 86400 + hours * 3600 + minutes * 60 + seconds
+        unit_matches = list(_COCKROACH_UNIT_TOKEN_RE.finditer(body))
+        if not unit_matches:
+            return None
+        leftover = _COCKROACH_UNIT_TOKEN_RE.sub("", body).replace(",", "").strip()
+        if leftover:
+            return None
+        return sum(int(match.group(1)) * _COCKROACH_UNIT_SECONDS[match.group(2).lower()] for match in unit_matches)
+
+    @staticmethod
+    def _unwrap_parens(node: "exp.Expr | None") -> "exp.Expr | None":
+        while isinstance(node, exp.Paren):
+            node = node.this
+        return node
+
+    @staticmethod
+    def _cockroach_column_matches(node: "exp.Expr | None", expected: "str") -> "bool":
+        unwrapped = CockroachQueueStore._unwrap_parens(node)
+        if not isinstance(unwrapped, exp.Column) or unwrapped.table:
+            return False
+        identifier = unwrapped.this
+        if not isinstance(identifier, exp.Identifier):
+            return False
+        name = identifier.name
+        if identifier.quoted:
+            return name == expected
+        return name.lower() == expected if expected.islower() else name == expected
+
+    @staticmethod
+    def _is_not_null_check(node: "exp.Expr | None", expected_col: "str") -> "bool":
+        unwrapped = CockroachQueueStore._unwrap_parens(node)
+        if (
+            isinstance(unwrapped, exp.Is)
+            and isinstance(unwrapped.expression, exp.Null)
+            and unwrapped.args.get("negate")
+        ):
+            return CockroachQueueStore._cockroach_column_matches(unwrapped.this, expected_col)
+        if isinstance(unwrapped, exp.Not):
+            inner = CockroachQueueStore._unwrap_parens(unwrapped.this)
+            if isinstance(inner, exp.Is) and isinstance(inner.expression, exp.Null) and not inner.args.get("negate"):
+                return CockroachQueueStore._cockroach_column_matches(inner.this, expected_col)
+        return False
+
+    @staticmethod
+    def _is_terminal_status_check(node: "exp.Expr | None", expected_col: "str") -> "bool":
+        unwrapped = CockroachQueueStore._unwrap_parens(node)
+        if not isinstance(unwrapped, exp.In):
+            return False
+        if not CockroachQueueStore._cockroach_column_matches(unwrapped.this, expected_col):
+            return False
+        expressions = unwrapped.expressions
+        if len(expressions) != len(_COCKROACH_TTL_TERMINAL_STATUSES):
+            return False
+        statuses = {item.name for item in expressions if isinstance(item, exp.Literal) and item.is_string}
+        return statuses == _COCKROACH_TTL_TERMINAL_STATUSES
+
+    @staticmethod
+    def _is_interval_expression(node: "exp.Expr | None") -> "bool":
+        unwrapped = CockroachQueueStore._unwrap_parens(node)
+        if isinstance(unwrapped, exp.Interval):
+            return True
+        if isinstance(unwrapped, exp.Cast):
+            to_type = unwrapped.to
+            return isinstance(to_type, exp.DataType) and bool(to_type.this == exp.DataType.Type.INTERVAL)
+        return False
+
+    @staticmethod
+    def _cockroach_ttl_matches(
+        live_expr: "str | None", *, desired_seconds: "int", raw_status_col: "str", raw_completed_col: "str"
+    ) -> "bool":
+        if not live_expr:
+            return False
+        if CockroachQueueStore._parse_cockroach_interval_seconds(live_expr) != desired_seconds:
+            return False
+        try:
+            parsed = CockroachQueueStore._unwrap_parens(sqlglot.parse_one(live_expr, read="postgres"))
+        except ParseError:
+            return False
+        if not isinstance(parsed, exp.Case) or not isinstance(parsed.args.get("default"), exp.Null):
+            return False
+        ifs = parsed.args.get("ifs")
+        if not isinstance(ifs, list) or len(ifs) != 1:
+            return False
+        branch = ifs[0]
+        if not isinstance(branch, exp.If):
+            return False
+        condition = CockroachQueueStore._unwrap_parens(branch.this)
+        if not isinstance(condition, exp.And):
+            return False
+        left, right = condition.this, condition.expression
+        has_predicate = (
+            CockroachQueueStore._is_terminal_status_check(left, raw_status_col)
+            and CockroachQueueStore._is_not_null_check(right, raw_completed_col)
+        ) or (
+            CockroachQueueStore._is_terminal_status_check(right, raw_status_col)
+            and CockroachQueueStore._is_not_null_check(left, raw_completed_col)
+        )
+        if not has_predicate:
+            return False
+        then_expr = CockroachQueueStore._unwrap_parens(branch.args.get("true"))
+        if not isinstance(then_expr, exp.Add):
+            return False
+        return (
+            CockroachQueueStore._cockroach_column_matches(then_expr.this, raw_completed_col)
+            and CockroachQueueStore._is_interval_expression(then_expr.expression)
+        ) or (
+            CockroachQueueStore._cockroach_column_matches(then_expr.expression, raw_completed_col)
+            and CockroachQueueStore._is_interval_expression(then_expr.this)
+        )
 
 
 class MySQLQueueStore(SQLSpecQueueStore):
@@ -623,147 +777,3 @@ class MySQLQueueStore(SQLSpecQueueStore):
 
 def _quote_tsql_identifier(identifier: "str") -> "str":
     return f"[{identifier.replace(']', ']]')}]"
-
-
-def _extract_create_statement(row: "Any") -> "str | None":
-    if row is None:
-        return None
-    value: "Any" = None
-    if isinstance(row, Mapping):
-        for key, item in row.items():
-            if isinstance(key, str) and key.lower() == "create_statement":
-                value = item
-                break
-    else:
-        value = getattr(row, "create_statement", None)
-        if value is None and hasattr(row, "__dict__"):
-            for key, item in vars(row).items():
-                if key.lower() == "create_statement":
-                    value = item
-                    break
-        if value is None:
-            value = getattr(row, "CREATE_STATEMENT", None)
-    return str(value) if value is not None else None
-
-
-def _parse_cockroach_ttl_state(create_statement: "str | None") -> "tuple[bool, str | None]":
-    if not create_statement:
-        return False, None
-    ttl_enabled = bool(_COCKROACH_TTL_ENABLED_RE.search(create_statement))
-    expr_match = _COCKROACH_TTL_EXPR_RE.search(create_statement)
-    live_expr = expr_match.group(1).replace("''", "'") if expr_match is not None else None
-    return ttl_enabled, live_expr
-
-
-def _parse_cockroach_interval_seconds(expr: "str") -> "int | None":
-    interval_match = _COCKROACH_INTERVAL_RE.search(expr)
-    if interval_match is None:
-        return None
-    body = next((group for group in interval_match.groups() if group is not None), "").strip()
-    if not body:
-        return None
-    clock_match = _COCKROACH_CLOCK_INTERVAL_RE.match(body)
-    if clock_match is not None:
-        days = int(clock_match.group(1) or 0)
-        hours = int(clock_match.group(2))
-        minutes = int(clock_match.group(3))
-        seconds = int(clock_match.group(4))
-        return days * 86400 + hours * 3600 + minutes * 60 + seconds
-    unit_matches = list(_COCKROACH_UNIT_TOKEN_RE.finditer(body))
-    if not unit_matches:
-        return None
-    leftover = _COCKROACH_UNIT_TOKEN_RE.sub("", body).replace(",", "").strip()
-    if leftover:
-        return None
-    return sum(int(match.group(1)) * _COCKROACH_UNIT_SECONDS[match.group(2).lower()] for match in unit_matches)
-
-
-def _unwrap_parens(node: "exp.Expr | None") -> "exp.Expr | None":
-    while isinstance(node, exp.Paren):
-        node = node.this
-    return node
-
-
-def _cockroach_column_matches(node: "exp.Expr | None", expected: "str") -> "bool":
-    unwrapped = _unwrap_parens(node)
-    if not isinstance(unwrapped, exp.Column) or unwrapped.table:
-        return False
-    identifier = unwrapped.this
-    if not isinstance(identifier, exp.Identifier):
-        return False
-    name = identifier.name
-    if identifier.quoted:
-        return name == expected
-    return name.lower() == expected if expected.islower() else name == expected
-
-
-def _is_not_null_check(node: "exp.Expr | None", expected_col: "str") -> "bool":
-    unwrapped = _unwrap_parens(node)
-    if isinstance(unwrapped, exp.Is) and isinstance(unwrapped.expression, exp.Null) and unwrapped.args.get("negate"):
-        return _cockroach_column_matches(unwrapped.this, expected_col)
-    if isinstance(unwrapped, exp.Not):
-        inner = _unwrap_parens(unwrapped.this)
-        if isinstance(inner, exp.Is) and isinstance(inner.expression, exp.Null) and not inner.args.get("negate"):
-            return _cockroach_column_matches(inner.this, expected_col)
-    return False
-
-
-def _is_terminal_status_check(node: "exp.Expr | None", expected_col: "str") -> "bool":
-    unwrapped = _unwrap_parens(node)
-    if not isinstance(unwrapped, exp.In):
-        return False
-    if not _cockroach_column_matches(unwrapped.this, expected_col):
-        return False
-    expressions = unwrapped.expressions
-    if len(expressions) != len(_COCKROACH_TTL_TERMINAL_STATUSES):
-        return False
-    statuses = {item.name for item in expressions if isinstance(item, exp.Literal) and item.is_string}
-    return statuses == _COCKROACH_TTL_TERMINAL_STATUSES
-
-
-def _is_interval_expression(node: "exp.Expr | None") -> "bool":
-    unwrapped = _unwrap_parens(node)
-    if isinstance(unwrapped, exp.Interval):
-        return True
-    if isinstance(unwrapped, exp.Cast):
-        to_type = unwrapped.to
-        return isinstance(to_type, exp.DataType) and bool(to_type.this == exp.DataType.Type.INTERVAL)
-    return False
-
-
-def _cockroach_ttl_matches(
-    live_expr: "str | None", *, desired_seconds: "int", raw_status_col: "str", raw_completed_col: "str"
-) -> "bool":
-    if not live_expr:
-        return False
-    if _parse_cockroach_interval_seconds(live_expr) != desired_seconds:
-        return False
-    try:
-        parsed = _unwrap_parens(sqlglot.parse_one(live_expr, read="postgres"))
-    except ParseError:
-        return False
-    if not isinstance(parsed, exp.Case) or not isinstance(parsed.args.get("default"), exp.Null):
-        return False
-    ifs = parsed.args.get("ifs")
-    if not isinstance(ifs, list) or len(ifs) != 1:
-        return False
-    branch = ifs[0]
-    if not isinstance(branch, exp.If):
-        return False
-    condition = _unwrap_parens(branch.this)
-    if not isinstance(condition, exp.And):
-        return False
-    left, right = condition.this, condition.expression
-    has_predicate = (
-        _is_terminal_status_check(left, raw_status_col) and _is_not_null_check(right, raw_completed_col)
-    ) or (_is_terminal_status_check(right, raw_status_col) and _is_not_null_check(left, raw_completed_col))
-    if not has_predicate:
-        return False
-    then_expr = _unwrap_parens(branch.args.get("true"))
-    if not isinstance(then_expr, exp.Add):
-        return False
-    return (
-        _cockroach_column_matches(then_expr.this, raw_completed_col) and _is_interval_expression(then_expr.expression)
-    ) or (
-        _cockroach_column_matches(then_expr.expression, raw_completed_col) and _is_interval_expression(then_expr.this)
-    )
