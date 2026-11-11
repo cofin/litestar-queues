@@ -64,7 +64,7 @@ When `unique_by="arguments"` is active, `litestar-queues` binds positional and k
 `unique_until` controls how long an identity key blocks subsequent `enqueue()` calls:
 
 - **`unique_until="terminal"` (default)**: Blocks duplicate enqueues only while the existing record is non-terminal (`pending`, `scheduled`, or `running`). Matching `enqueue()` calls return a `TaskResult` pointing to the active record. Once the record reaches `completed`, `failed`, `cancelled`, or `expired`, the identity is automatically released.
-- **`unique_until="forever"`**: Persists a lightweight [`TaskReservation`](../reference/tasks-and-models.md#litestar_queues.models.TaskReservation) (`key`, `task_id`, `task_name`, `created_at`) that survives terminal completion and routine `cleanup_completed` / `terminal_ttl` purges. Subsequent enqueues with the same identity return the existing reservation's task handle until an operator explicitly resets the key.
+- **`unique_until="forever"`**: Persists a lightweight [`TaskReservation`](../reference/tasks-and-models.md#litestar_queues.models.TaskReservation) (`key`, `task_id`, `task_name`, `created_at`) that survives terminal completion and routine `cleanup_terminal` / `terminal_ttl` purges. Subsequent enqueues with the same identity return the existing reservation's task handle until an operator explicitly resets the key.
 
 ### Inspecting and Resetting Forever Reservations
 

@@ -25,25 +25,30 @@ The SQLSpec backend ([`SQLSpecQueueBackend`](../reference/backends.md#litestar_q
 
 ## Schema Management & Migrations
 
-The SQLSpec queue schema (`0001_create_queue_tasks`) provisions four tables:
+The SQLSpec queue schema provisions four tables across unversioned schema reconciliation (`migration_mode="reconcile"`, the default in `sqlspec>=0.72.0`), packaged versioned migrations (`0001_create_queue_tasks`), and `await backend.create_schema()`:
 
 1. **`queue_task`** (override via `queue_table_name`): Active and terminal task records, payload JSON, lease timestamps, and retry fences.
 2. **`queue_task_event_history`** (override via `event_history_table_name`): Durable lifecycle and custom progress events when `QueueEventsConfig(history=EventHistoryConfig(...))` is active.
 3. **`queue_maintenance`** (override via `maintenance_table_name`): Distributed maintenance lease coordination rows.
 4. **`queue_task_reservation`** (override via `task_reservation_table_name`): Permanent `unique_until="forever"` identity reservations (`TaskReservation`).
 
-### Automatic vs Externally Managed Schemas
+### Schema Reconciliation vs. Versioned Migrations (`migration_mode`)
 
-- **SQLSpec Migration Integration**: When `SQLSpecBackendConfig` is passed to `QueueConfig`, `QueuePlugin` invokes `SQLSpecBackendConfig.configure_migrations()` (`configure_queue_migration_extension` and `configure_events_migration_extension`) so `sqlspec` CLI migrations automatically include the queue and event-queue migration directories.
-- **Programmatic Schema Creation (`create_schema()`)**: Call `await backend.create_schema()` in tests, bootstrap scripts, or Google Cloud Spanner administrative DDL setup when `manage_schema=True` (the default).
-- **Adopter-Managed Schemas (`manage_schema=False`)**: Set `manage_schema=False` when your organization manages all DDL through external migration pipelines. When `manage_schema=False`, `litestar-queues` never executes `CREATE TABLE` or `DROP TABLE` statements and supports custom column mappings via `column_map` and `native_json_columns`.
+`SQLSpecBackendConfig.migration_mode` selects how `SQLSpecBackendConfig.configure_migrations()` registers both `configure_queue_migration_extension` (`"litestar_queues"`) and `configure_events_migration_extension` (`"events"`):
+
+- **`migration_mode="reconcile"` (default, `sqlspec>=0.72.0`)**: Registers queue and durable event-queue stores in `commands.extension_reconcilers`. Every `upgrade("head")` idempotently creates missing enabled tables, adds missing nullable columns (such as `expires_at` on `queue_task` or declarative `EventHistoryExtraColumn` columns on `queue_task_event_history`), repairs dropped companion indexes via catalog inspection (`metadata_has_index`), and converges CockroachDB `terminal_ttl` policies without inserting `ext_litestar_queues_*` rows into `ddl_migrations`.
+- **`migration_mode="versioned"`**: Registers the packaged migration directory (`0001_create_queue_tasks`) in `commands.runner.extension_migrations` and records `ext_litestar_queues_0001` in `ddl_migrations`.
+- **Strict Additive Safety & Base Downgrade**: Reconcile mode runs `ensure_schema_sync` / `ensure_schema_async` with `strict=True`, raising `sqlspec.exceptions.MigrationError` before executing DDL whenever an existing table omits required defaultless `NOT NULL` or constrained columns, narrows nullability, or introduces incompatible column type drift. Running `downgrade("base")` invokes `reconcile.downgrade(context)` to drop enabled queue tables in reverse dependency order (`queue_task_reservation`, `queue_maintenance`, `queue_task_event_history`, `queue_task`).
+- **Supported & Refused Reconcile Adapters**: Supported across SQLite (`aiosqlite`, `sqlite`, `adbc` with `dialect="sqlite"`), PostgreSQL (`asyncpg`, `psycopg`, `psqlpy`), CockroachDB (`cockroach_asyncpg`, `cockroach_psycopg`), MySQL and MariaDB (`asyncmy`, `aiomysql`, `pymysql`, `mysqlconnector`), Oracle Database (`oracledb`), DuckDB (`duckdb`), Microsoft SQL Server (`pymssql`, `mssql_python`, `arrow_odbc` targeting `mssql` / `tsql`), and third-party adapters declaring an explicit `queue_store_class`. Refused with `MigrationError` on Google Cloud Spanner (`spanner`, which applies administrative DDL via `await backend.create_schema()` / `Database.update_ddl`), IBM Db2 (`db2`), all non-`sqlite` `adbc` dialects (such as FlightSQL, PostgreSQL, DuckDB, or Snowflake over ADBC), and all non-`mssql` `arrow_odbc` dialects (including `"db2"`).
+- **Programmatic `create_schema()` Parity**: Calling `await backend.create_schema()` in tests or bootstrap scripts runs the same four-family reconciliation pipeline when `migration_mode="reconcile"` (unwrapping synchronous pooled drivers cleanly) while keeping idempotent `CREATE` DDL for `migration_mode="versioned"` and Google Cloud Spanner.
+- **Adopter-Managed Schemas (`manage_schema=False`)**: Set `manage_schema=False` when external migration pipelines own all DDL. When `manage_schema=False`, `litestar-queues` removes registered queue and event-queue migrations, executes zero `CREATE`, `ALTER`, or `DROP` statements, and supports custom column mappings via `column_map` and `native_json_columns`.
 
 ## Native Row-Level Terminal TTL & Worker Sweeps
 
 Setting `SQLSpecBackendConfig(terminal_ttl=86_400.0)` configures retention for finished records (`completed`, `failed`, `cancelled`, `expired`) in two complementary ways:
 
 1. **Database-Native Row Expiration (CockroachDB & Google Cloud Spanner)**:
-   - **CockroachDB**: `create_statements()` and migration `0001_create_queue_tasks` attach a `ttl_expiration_expression` storage parameter computed from `completed_at + INTERVAL '<N> seconds'` so only rows with a non-null `completed_at` in terminal status expire automatically in the background.
+   - **CockroachDB**: `create_statements()`, versioned migration `0001_create_queue_tasks`, and `migration_mode="reconcile"` (`ALTER TABLE ... SET (ttl = 'on', ...)` and `ALTER TABLE ... RESET (ttl)` when cleared) manage a `ttl_expiration_expression` storage parameter computed from `completed_at + INTERVAL '<N> seconds'` so only terminal rows with a non-null `completed_at` expire automatically in the background.
    - **Google Cloud Spanner**: `create_statements()` attaches `ROW DELETION POLICY (OLDER_THAN(completed_at, INTERVAL <N> DAY))` (rounding `terminal_ttl` up to whole days) because Spanner only deletes rows where `completed_at IS NOT NULL`.
 2. **In-Worker Periodic Cleanup (All SQL Dialects)**:
    - When `WorkerConfig.terminal_retention` is left as `None`, workers automatically inherit `SQLSpecBackendConfig.terminal_ttl` and run periodic `cleanup_terminal()` sweeps every `WorkerConfig.terminal_check_interval` (`300.0s`).
