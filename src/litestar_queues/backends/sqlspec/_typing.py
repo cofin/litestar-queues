@@ -111,7 +111,7 @@ if TYPE_CHECKING:
 DatetimeParam: TypeAlias = datetime | str
 ExtensionMigrationMode: TypeAlias = Literal["versioned", "reconcile"]
 VALID_MIGRATION_MODES: "frozenset[str]" = frozenset({"versioned", "reconcile"})
-DEFAULT_MIGRATION_MODE: "ExtensionMigrationMode" = "versioned"
+DEFAULT_MIGRATION_MODE: "ExtensionMigrationMode" = "reconcile"
 
 
 def validate_migration_mode(migration_mode: "object") -> "ExtensionMigrationMode":

@@ -184,7 +184,7 @@ async def test_queue_plugin_keeps_runtime_and_migration_table_overrides_aligned(
         "task_reservation_table_name": "custom_reservation",
         "column_map": dict(backend_config.column_map),
         "migrations_path": migration_directory(),
-        "migration_mode": "versioned",
+        "migration_mode": "reconcile",
     }
 
     migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
@@ -415,8 +415,8 @@ async def test_sqlserver_native_migration_schema_and_queue_cycle(
             driver.execute_script(f"ALTER ROLE db_owner ADD MEMBER [{schema}]")
             driver.execute_script(f"CREATE SCHEMA [{schema}]")
             driver.commit()
-        await run_queue_migrations(config, queue_table_name=table)
-        await run_queue_migrations(config, queue_table_name=table)
+        await run_queue_migrations(config, queue_table_name=table, migration_mode="versioned")
+        await run_queue_migrations(config, queue_table_name=table, migration_mode="versioned")
         await backend.open()
         record = await backend.enqueue("tasks.native_sqlserver")
         claimed = await backend.claim_task(record.id)
@@ -530,7 +530,7 @@ async def test_sqlspec_packaged_migration_long_postgres_name_is_idempotent(
             await driver.execute_script((await migration.up(context))[0])
             await driver.execute_script(f'CREATE INDEX "{legacy_name}" ON "{table_name}" (id)')
         for _ in range(2):
-            await run_queue_migrations(config, queue_table_name=table_name)
+            await run_queue_migrations(config, queue_table_name=table_name, migration_mode="versioned")
             async with manager.provide_session(config) as driver:
                 versions = await driver.select(f'SELECT version_num FROM "{tracking}"')
                 assert {row["version_num"] for row in versions} == discovered

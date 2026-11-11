@@ -2207,7 +2207,7 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
     db_path = tmp_path / "migrated.db"
 
     first_config = sqlite_config_factory(db_path)
-    await run_queue_migrations(first_config)
+    await run_queue_migrations(first_config, migration_mode="versioned")
 
     first = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=first_config))
     await first.open()
@@ -2215,7 +2215,7 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
     await first.close()
 
     second_config = sqlite_config_factory(db_path)
-    await run_queue_migrations(second_config)
+    await run_queue_migrations(second_config, migration_mode="versioned")
 
     second = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=second_config))
     await second.open()
@@ -2242,7 +2242,7 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
     assert versions == discovered
 
     third_config = sqlite_config_factory(db_path)
-    await run_queue_migrations(third_config)
+    await run_queue_migrations(third_config, migration_mode="versioned")
 
     with closing(sqlite3.connect(db_path)) as connection:
         after_second = [
@@ -2252,6 +2252,33 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
         ]
 
     assert after_second == discovered
+
+
+async def test_sqlspec_backend_can_start_with_default_reconcile_migrations(
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
+) -> "None":
+    db_path = tmp_path / "reconciled.db"
+    sqlspec_config = sqlite_config_factory(db_path)
+    await run_queue_migrations(sqlspec_config)
+
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config))
+    await backend.open()
+    try:
+        record = await backend.enqueue("tasks.reconciled")
+    finally:
+        await backend.close()
+
+    assert record.task_name == "tasks.reconciled"
+    with closing(sqlite3.connect(db_path)) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert "queue_task" in tables
+        if "ddl_migrations" in tables:
+            versions = [
+                row[0]
+                for row in connection.execute("SELECT version_num FROM ddl_migrations")
+                if str(row[0]).startswith(f"ext_{QUEUE_EXTENSION_NAME}_")
+            ]
+            assert versions == []
 
 
 async def test_sqlspec_backend_packaged_migrations_publish_extension_preserving_other_migration_options(
