@@ -535,6 +535,7 @@ async def test_redis_list_tasks_batches_hmget_over_500_candidates() -> "None":
         ("completed", "emails", ("done-1",)),
         (("completed", "failed"), None, ("fail-1", "done-2", "done-1")),
         (("completed", "failed"), "emails", ("fail-1", "done-1")),
+        (("completed", "cancelled"), "emails", ("done-1",)),
     ],
 )
 async def test_redis_list_tasks_handles_resp2_list_and_none_replies(
@@ -818,10 +819,6 @@ class _CountingPipeline:
         self.operations.append(("sinter", keys, {}))
         return self
 
-    def sunion(self, *keys: "Any") -> "_CountingPipeline":
-        self.operations.append(("sunion", keys, {}))
-        return self
-
     async def execute(self) -> "list[Any]":
         self.client.pipeline_execute_calls += 1
         results: "list[Any]" = []
@@ -869,11 +866,13 @@ class _CountingPipeline:
             return len(self.client.sets.get(cast("str", args[0]), set()))
         if operation == "smembers":
             self.client.smembers_calls += 1
-            return self.client.sets.get(cast("str", args[0]), set())
+            members = self.client.sets.get(cast("str", args[0]), builtins.set())
+            return sorted(members) if self.client.resp2_list_replies else members
         if operation == "sinter":
-            return self.client._sinter_sets(args)
-        if operation == "sunion":
-            return self.client._sunion_sets(args)
+            members = self.client._sinter_sets(args)
+            if self.client.simulate_missing_hmget_none and not members:
+                return None
+            return sorted(members) if self.client.resp2_list_replies else members
         return None
 
     def _execute_eval(self, args: "tuple[Any, ...]") -> "int":
