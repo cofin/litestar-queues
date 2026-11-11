@@ -54,14 +54,68 @@ class _OracledbQueueStore(SQLSpecQueueStore):
             .where(f"{checked_column} IS NULL OR {checked_column} < {comparison_sql}", checked_before=checked_now)
         )
 
+    def prepare_schema_sync(self, driver: "Any") -> "None":
+        """Detect Oracle JSON column storage on the active sync driver."""
+        if self._json_storage is not None:
+            return
+        sync_driver = getattr(driver, "_driver", None)
+        raw_driver = driver if sync_driver is None else sync_driver
+        version_info = _sync_oracle_version_info(raw_driver)
+        self._apply_json_storage(_json_storage_from_version_info(version_info))
+
+    async def prepare_schema_async(self, driver: "Any") -> "None":
+        """Detect Oracle JSON column storage on the active async or bridged driver."""
+        await self._detect_json_storage_type(driver)
+
+    def create_table_statement(self) -> "str":
+        """Return the Oracle PL/SQL ``CREATE TABLE`` block without mutating ``_json_storage``."""
+        if not self._manage_schema:
+            return ""
+        storage_type = self._configured_json_storage()
+        return _create_table_block(
+            self, storage_type, bool(getattr(self, "_in_memory", False)), include_expiration=True
+        )
+
+    def companion_indexes(self) -> "tuple[tuple[str, str], ...]":
+        """Return 30-char-capped Oracle index ``(index_name, plsql_block)`` tuples."""
+        if not self._manage_schema:
+            return ()
+        return (
+            (
+                self._index_name("pending"),
+                _create_index_block(
+                    self,
+                    "pending",
+                    (
+                        f"{self._col('status')}, {self._col('queue')}, {self._col('execution_backend')}, "
+                        f"{self._col('scheduled_at')}, {self._col('priority')}, {self._col('created_at')}"
+                    ),
+                ),
+            ),
+            (
+                self._index_name("heartbeat"),
+                _create_index_block(self, "heartbeat", f"{self._col('status')}, {self._col('heartbeat_at')}"),
+            ),
+            (
+                self._index_name("dispatch_repair"),
+                _create_index_block(
+                    self,
+                    "dispatch_repair",
+                    ", ".join(
+                        self._col(c) for c in ("execution_backend", "status", "dispatch_checked_at", "created_at", "id")
+                    ),
+                ),
+            ),
+        )
+
     def create_statements(self) -> "list[str]":
         """Return statements that create Oracle queue artifacts."""
         return self._create_statements_with_storage(self._configured_json_storage(), include_expiration=True)
 
     async def create_statements_for_driver(self, driver: "Any") -> "list[str]":
         """Return schema statements using cached Oracle version-aware JSON storage."""
-        storage_type = await self._detect_json_storage_type(driver)
-        return self._create_statements_with_storage(storage_type, include_expiration=True)
+        await self.prepare_schema_async(driver)
+        return self.create_statements()
 
     def drop_statements(self) -> "list[str]":
         """Return statements that drop Oracle queue artifacts."""
@@ -87,6 +141,10 @@ class _OracledbQueueStore(SQLSpecQueueStore):
             return _deserialize_native_oracle_json(canonical, value)
         return _deserialize_oracle_json(value)
 
+    def serialize_error(self, error: "str") -> "str":
+        """Return an Oracle-safe error value for the VARCHAR2 error column."""
+        return error[:_ORACLE_ERROR_MAX_LENGTH]
+
     def _string_type(self, length: "int | None" = None) -> "str":
         return "CLOB" if length is None else f"VARCHAR2({length})"
 
@@ -95,10 +153,6 @@ class _OracledbQueueStore(SQLSpecQueueStore):
 
     def _error_type(self) -> "str":
         return "VARCHAR2(4000)"
-
-    def serialize_error(self, error: "str") -> "str":
-        """Return an Oracle-safe error value for the VARCHAR2 error column."""
-        return error[:_ORACLE_ERROR_MAX_LENGTH]
 
     def _index_name(self, suffix: "str") -> "str":
         return _index_name(self, suffix)
@@ -117,22 +171,7 @@ class _OracledbQueueStore(SQLSpecQueueStore):
             _create_table_block(
                 self, storage_type, bool(getattr(self, "_in_memory", False)), include_expiration=include_expiration
             ),
-            _create_index_block(
-                self,
-                "pending",
-                (
-                    f"{self._col('status')}, {self._col('queue')}, {self._col('execution_backend')}, "
-                    f"{self._col('scheduled_at')}, {self._col('priority')}, {self._col('created_at')}"
-                ),
-            ),
-            _create_index_block(self, "heartbeat", f"{self._col('status')}, {self._col('heartbeat_at')}"),
-            _create_index_block(
-                self,
-                "dispatch_repair",
-                ", ".join(
-                    self._col(c) for c in ("execution_backend", "status", "dispatch_checked_at", "created_at", "id")
-                ),
-            ),
+            *(stmt for _, stmt in self.companion_indexes()),
         ]
 
     async def _detect_json_storage_type(self, driver: "Any") -> "_OracleJSONStorageType":
