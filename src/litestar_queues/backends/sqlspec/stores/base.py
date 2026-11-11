@@ -1524,9 +1524,6 @@ RETURNING {target}.{id_col} AS id
             ),
         )
 
-    def _create_index_statements(self, *, include_expiration: "bool" = True) -> "list[str]":
-        return [stmt for _, stmt in self._companion_index_specs(include_expiration=include_expiration)]
-
     def _select_column(self, canonical: "str") -> "str":
         column = self._col(canonical)
         if column == canonical:

@@ -668,15 +668,19 @@ def test_mysql_queue_store_separates_table_ddl_and_companion_indexes() -> "None"
 
     indexes = store.companion_indexes()
     index_map = dict(indexes)
-    expected_defs = dict(store._mysql_index_definitions())
-    assert tuple(index_map) == tuple(f"ix_queue_task_{suffix}" for suffix in expected_defs)
+    assert tuple(index_map) == ("ix_queue_task_pending", "ix_queue_task_dispatch_repair", "ix_queue_task_heartbeat")
     assert index_map["ix_queue_task_pending"] == (
-        f"ALTER TABLE `queue_task` ADD INDEX `ix_queue_task_pending` ({expected_defs['pending']})"
+        "ALTER TABLE `queue_task` ADD INDEX `ix_queue_task_pending` "
+        "(`status`(32), `queue`(191), `execution_backend`(191), `scheduled_at`, `priority`, `queued_at`, `created_at`)"
     )
-    assert "`status`(32)" in index_map["ix_queue_task_pending"]
-    assert "`queue`(191)" in index_map["ix_queue_task_pending"]
-    assert "`execution_backend`(191)" in index_map["ix_queue_task_pending"]
-    assert "`status`(32)" in index_map["ix_queue_task_heartbeat"]
+    assert index_map["ix_queue_task_dispatch_repair"] == (
+        "ALTER TABLE `queue_task` ADD INDEX `ix_queue_task_dispatch_repair` "
+        "(`execution_backend`, `status`, `dispatch_checked_at`, `created_at`, `id`)"
+    )
+    assert (
+        index_map["ix_queue_task_heartbeat"]
+        == "ALTER TABLE `queue_task` ADD INDEX `ix_queue_task_heartbeat` (`status`(32), `heartbeat_at`)"
+    )
 
     versioned = store.create_statements()
     assert len(versioned) == 1
@@ -740,6 +744,19 @@ async def test_postgres_reconcile_storage_options_applies_autovacuum(
         (None, 3600.0, None, "set"),
         ({}, None, None, "noop"),
         ({"create_statement": None}, None, None, "noop"),
+        (
+            types.SimpleNamespace(
+                create_statement=(
+                    'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'on\', '
+                    "ttl_expiration_expression = 'CASE WHEN status IN (''completed'', ''failed'', "
+                    "''cancelled'', ''expired'') AND completed_at IS NOT NULL THEN completed_at + "
+                    "''01:00:00''::INTERVAL ELSE NULL END')"
+                )
+            ),
+            3600.0,
+            None,
+            "noop",
+        ),
         (
             {
                 "CREATE_STATEMENT": (
