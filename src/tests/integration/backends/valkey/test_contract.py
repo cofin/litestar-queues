@@ -9,6 +9,7 @@ notification-capability label (``valkey-pubsub``).
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 import pytest
 
@@ -16,7 +17,7 @@ pytest.importorskip("valkey")
 
 from litestar_queues import TaskRequest
 from litestar_queues.backends.redis import backend as redis_backend_module
-from litestar_queues.models import HeartbeatTouch
+from litestar_queues.models import HeartbeatTouch, TaskListPage
 from tests.helpers._timing import MutableClock
 from tests.helpers.redis_protocol import wait_for_channel_subscribers
 from tests.integration._expiry_contract import (
@@ -633,3 +634,57 @@ async def test_valkey_scheduled_execution_ref_rejects_mismatches(valkey_backend:
     from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_rejects_mismatches
 
     await assert_scheduled_execution_ref_rejects_mismatches(valkey_backend)
+
+
+async def test_valkey_backend_list_tasks_filters_tie_breaks_and_paginates(
+    valkey_backend: "ValkeyQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    base = datetime(2026, 2, 1, 12, 0, 0, tzinfo=UTC)
+    current = base
+    monkeypatch.setattr(redis_backend_module, "_utc_now", lambda: current)
+
+    tie_low = await valkey_backend.enqueue("tasks.email", queue="emails", id=UUID(int=1))
+    tie_high = await valkey_backend.enqueue("tasks.email", queue="emails", id=UUID(int=2))
+
+    current = base + timedelta(seconds=1)
+    first_keyed = await valkey_backend.enqueue("tasks.sync", queue="emails", key="sync:acct-1")
+    assert await valkey_backend.claim_task(first_keyed.id) is not None
+    await valkey_backend.complete_task(first_keyed.id, result={"ok": True})
+
+    current = base + timedelta(seconds=2)
+    second_keyed = await valkey_backend.enqueue("tasks.sync", queue="emails", key="sync:acct-1")
+
+    current = base + timedelta(seconds=3)
+    failed = await valkey_backend.enqueue("tasks.email", queue="emails", max_retries=0)
+    assert await valkey_backend.claim_task(failed.id) is not None
+    await valkey_backend.fail_task(failed.id, "boom")
+
+    current = base + timedelta(seconds=4)
+    other_queue = await valkey_backend.enqueue("tasks.email", queue="reports")
+
+    tie_page = await valkey_backend.list_tasks(status="pending", queue="emails", task_name="tasks.email")
+    assert [record.id for record in tie_page.items] == [tie_high.id, tie_low.id]
+    assert tie_page.total == 2
+    assert tie_page.has_more is False
+
+    reused_key_page = await valkey_backend.list_tasks(key="sync:acct-1")
+    assert [record.id for record in reused_key_page.items] == [second_keyed.id, first_keyed.id]
+    assert reused_key_page.total == 2
+
+    page = await valkey_backend.list_tasks(status=("completed", "failed", "pending"), queue="emails", limit=2, offset=1)
+    assert page.total == 5
+    assert [record.id for record in page.items] == [second_keyed.id, first_keyed.id]
+    assert page.has_more is True
+
+    tail = await valkey_backend.list_tasks(status=("completed", "failed", "pending"), queue="emails", limit=2, offset=4)
+    assert [record.id for record in tail.items] == [tie_low.id]
+    assert tail.total == 5
+    assert tail.has_more is False
+
+    reports_page = await valkey_backend.list_tasks(queue="reports")
+    assert [record.id for record in reports_page.items] == [other_queue.id]
+
+    assert await valkey_backend.list_tasks(status=(), limit=5, offset=0) == TaskListPage(
+        items=[], limit=5, offset=0, total=0
+    )
+    assert await valkey_backend.list_tasks(limit=2, offset=10) == TaskListPage(items=[], limit=2, offset=10, total=6)
