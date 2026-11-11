@@ -14,9 +14,11 @@ from unittest.mock import MagicMock
 
 import pytest
 from sqlspec.adapters.asyncpg.events.store import AsyncpgEventQueueStore
+from sqlspec.migrations.schema import SchemaTarget
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.backend import _adapter_wakeup_transport, _events_queue_store, _match_store_class
+from litestar_queues.backends.sqlspec.stores._dialects import MySQLQueueStore, PostgresQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 from litestar_queues.backends.sqlspec.stores.factory import _adapter_store_type, create_queue_store
@@ -546,3 +548,377 @@ def test_create_queue_store_instantiates_every_adapter_with_terminal_ttl(
     store = create_queue_store(config, terminal_ttl=terminal_ttl)
     assert isinstance(store, SQLSpecQueueStore)
     assert store._terminal_ttl == terminal_ttl
+
+
+class _RecordingSyncDriver:
+    def __init__(self, row: "Any" = None) -> "None":
+        self.row = row
+        self.queries: "list[str]" = []
+        self.executed: "list[str]" = []
+
+    def select_one_or_none(self, sql_text: "str") -> "Any":
+        self.queries.append(sql_text)
+        return self.row
+
+    def execute(self, sql_text: "str") -> "None":
+        self.executed.append(sql_text)
+
+
+class _RecordingAsyncDriver:
+    def __init__(self, row: "Any" = None) -> "None":
+        self.row = row
+        self.queries: "list[str]" = []
+        self.executed: "list[str]" = []
+
+    async def select_one_or_none(self, sql_text: "str") -> "Any":
+        self.queries.append(sql_text)
+        return self.row
+
+    async def execute(self, sql_text: "str") -> "None":
+        self.executed.append(sql_text)
+
+
+@pytest.mark.parametrize(
+    ("adapter", "dialect", "expected_sqlglot_dialect"),
+    [
+        ("sqlite", "sqlite", "sqlite"),
+        ("aiosqlite", "sqlite", "sqlite"),
+        ("adbc", "sqlite", "sqlite"),
+        ("asyncpg", "postgres", "postgres"),
+        ("psycopg", "postgres", "postgres"),
+        ("psqlpy", "postgres", "postgres"),
+        ("cockroach_asyncpg", "cockroachdb", "postgres"),
+        ("cockroach_psycopg", "cockroachdb", "postgres"),
+        ("pymysql", "mysql", "mysql"),
+        ("aiomysql", "mysql", "mysql"),
+        ("asyncmy", "mysql", "mysql"),
+        ("mysqlconnector", "mysql", "mysql"),
+        ("pymssql", "mssql", "tsql"),
+        ("mssql_python", "mssql", "tsql"),
+        ("arrow_odbc", "tsql", "tsql"),
+        ("duckdb", "duckdb", "duckdb"),
+    ],
+)
+def test_queue_store_sqlglot_dialect_mapping(adapter: "str", dialect: "str", expected_sqlglot_dialect: "str") -> "None":
+    """Queue stores expose SQLGlot-compatible dialect names across all supported adapters."""
+    store = create_queue_store(
+        _fake_config(adapter, is_async=(adapter not in {"sqlite", "adbc", "arrow_odbc"}), dialect=dialect)
+    )
+    assert store.sqlglot_dialect() == expected_sqlglot_dialect
+
+
+@pytest.mark.parametrize(
+    ("raw_dialect", "expected_sqlglot_dialect"),
+    [
+        ("cockroachdb", "postgres"),
+        ("postgresql", "postgres"),
+        ("mssql", "tsql"),
+        ("mariadb", "mysql"),
+        ("sqlite", "sqlite"),
+        (None, None),
+    ],
+)
+def test_base_queue_store_sqlglot_dialect_aliases(
+    raw_dialect: "str | None", expected_sqlglot_dialect: "str | None"
+) -> "None":
+    """Base SQLSpecQueueStore normalizes SQLGlot dialect aliases."""
+    store = SQLSpecQueueStore(_fake_config("custom", dialect=raw_dialect))
+    assert store.sqlglot_dialect() == expected_sqlglot_dialect
+
+
+@pytest.mark.parametrize(
+    ("adapter", "dialect", "terminal_ttl"),
+    [
+        ("sqlite", "sqlite", None),
+        ("asyncpg", "postgres", None),
+        ("cockroach_asyncpg", "postgres", 3600.0),
+        ("pymysql", "mysql", None),
+        ("pymssql", "mssql", None),
+        ("arrow_odbc", "tsql", None),
+        ("duckdb", "duckdb", None),
+    ],
+)
+@pytest.mark.parametrize("table_name", ["queue_task", "app.queue_task"])
+def test_schema_target_parses_every_queue_store_table_ddl(
+    adapter: "str", dialect: "str", terminal_ttl: "float | None", table_name: "str"
+) -> "None":
+    """SchemaTarget.from_ddl parses table-only DDL across every queue store and dialect."""
+    store = create_queue_store(
+        _fake_config(adapter, is_async=(adapter not in {"sqlite", "arrow_odbc"}), dialect=dialect),
+        table_name=table_name,
+        terminal_ttl=terminal_ttl,
+    )
+    table_ddl = store.create_table_statement()
+    target = SchemaTarget.from_ddl(store.table_name, table_ddl, dialect=store.sqlglot_dialect())
+    assert len(target.create_table.columns) == 25
+    indexes = store.companion_indexes()
+    assert indexes
+    assert all(isinstance(name, str) and bool(name) and isinstance(stmt, str) and bool(stmt) for name, stmt in indexes)
+
+
+def test_mysql_queue_store_separates_table_ddl_and_companion_indexes() -> "None":
+    """MySQLQueueStore omits inline indexes from create_table_statement and keeps them in companion_indexes."""
+    store = create_queue_store(_fake_config("pymysql", dialect="mysql"))
+    assert isinstance(store, MySQLQueueStore)
+
+    table_ddl = store.create_table_statement()
+    assert "INDEX " not in table_ddl
+    assert "UNIQUE" in table_ddl
+    assert "ENGINE=InnoDB" in table_ddl
+
+    indexes = store.companion_indexes()
+    index_map = dict(indexes)
+    expected_defs = dict(store._mysql_index_definitions())
+    assert tuple(index_map) == tuple(f"ix_queue_task_{suffix}" for suffix in expected_defs)
+    assert index_map["ix_queue_task_pending"] == (
+        f"ALTER TABLE `queue_task` ADD INDEX `ix_queue_task_pending` ({expected_defs['pending']})"
+    )
+    assert "`status`(32)" in index_map["ix_queue_task_pending"]
+    assert "`queue`(191)" in index_map["ix_queue_task_pending"]
+    assert "`execution_backend`(191)" in index_map["ix_queue_task_pending"]
+    assert "`status`(32)" in index_map["ix_queue_task_heartbeat"]
+
+    versioned = store.create_statements()
+    assert len(versioned) == 1
+    assert "INDEX " in versioned[0]
+
+
+@pytest.mark.parametrize("adapter", ["pymssql", "mssql_python", "arrow_odbc"])
+def test_mssql_and_arrow_odbc_preserve_filtered_task_key_companion_index(adapter: "str") -> "None":
+    """SQL Server stores preserve filtered task_key uniqueness in companion_indexes without duplication."""
+    store = create_queue_store(_fake_config(adapter, is_async=False, dialect="tsql"))
+    indexes = store.companion_indexes()
+    index_map = dict(indexes)
+    assert len(index_map) == len(indexes)
+    assert "ix_queue_task_task_key" in index_map
+    assert "WHERE [task_key] IS NOT NULL" in index_map["ix_queue_task_task_key"]
+    assert store.create_statements() == [store.create_table_statement(), *(stmt for _, stmt in indexes)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("adapter", "expect_autovacuum"),
+    [("asyncpg", True), ("psycopg", True), ("psqlpy", True), ("plain_postgres", False)],
+)
+async def test_postgres_reconcile_storage_options_applies_autovacuum(
+    adapter: "str", expect_autovacuum: "bool"
+) -> "None":
+    """PostgresQueueStore applies autovacuum storage parameters only when table_storage_parameters is enabled."""
+    store: SQLSpecQueueStore
+    if adapter == "plain_postgres":
+        store = PostgresQueueStore(_fake_config("postgres", dialect="postgres"))
+    else:
+        store = create_queue_store(_fake_config(adapter, dialect="postgres"))
+
+    sync_driver = _RecordingSyncDriver()
+    async_driver = _RecordingAsyncDriver()
+    store.prepare_schema_sync(sync_driver)
+    await store.prepare_schema_async(async_driver)
+    store.reconcile_storage_options_sync(sync_driver)
+    await store.reconcile_storage_options_async(async_driver)
+
+    expected = (
+        ['ALTER TABLE "queue_task" SET (autovacuum_vacuum_scale_factor = 0.05, autovacuum_analyze_scale_factor = 0.02)']
+        if expect_autovacuum
+        else []
+    )
+    assert sync_driver.executed == expected
+    assert async_driver.executed == expected
+    assert "ALTER TABLE" not in store.create_table_statement()
+    assert ("WITH (fillfactor = 80)" in store.create_table_statement()) is expect_autovacuum
+    assert store.create_statements() == [
+        store.create_table_statement(),
+        *(stmt for _, stmt in store.companion_indexes()),
+        *expected,
+    ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("row", "terminal_ttl", "column_map", "expected_action"),
+    [
+        (None, 3600.0, None, "set"),
+        ({}, None, None, "noop"),
+        ({"create_statement": None}, None, None, "noop"),
+        (
+            {
+                "CREATE_STATEMENT": (
+                    'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'on\', '
+                    "ttl_expiration_expression = 'CASE WHEN (status IN (''completed'', ''failed'', "
+                    "''cancelled'', ''expired'')) AND (completed_at IS NOT NULL) THEN completed_at + "
+                    "''01:00:00''::INTERVAL ELSE NULL END')"
+                )
+            },
+            3600.0,
+            None,
+            "noop",
+        ),
+        (
+            {
+                "create_statement": (
+                    'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'on\', '
+                    "ttl_expiration_expression = 'CASE WHEN \"status\" IN (''completed'', ''failed'', "
+                    "''cancelled'', ''expired'') AND \"completed_at\" IS NOT NULL THEN \"completed_at\" + "
+                    "''3600s''::INTERVAL ELSE NULL END')"
+                )
+            },
+            3600.0,
+            None,
+            "noop",
+        ),
+        (
+            {
+                "create_statement": (
+                    'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'on\', '
+                    "ttl_expiration_expression = 'CASE WHEN status IN (''completed'', ''failed'', "
+                    "''cancelled'', ''expired'') AND completed_at IS NOT NULL THEN completed_at + "
+                    "''1 day 01:00:00''::INTERVAL ELSE NULL END')"
+                )
+            },
+            90000.0,
+            None,
+            "noop",
+        ),
+        (
+            {
+                "create_statement": (
+                    'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'on\', '
+                    "ttl_expiration_expression = 'CASE WHEN status IN (''completed'', ''failed'', "
+                    "''cancelled'', ''expired'') AND completed_at IS NOT NULL THEN completed_at + "
+                    "INTERVAL ''60 seconds'' ELSE NULL END')"
+                )
+            },
+            120.0,
+            None,
+            "set",
+        ),
+        (
+            {
+                "create_statement": (
+                    'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'on\', '
+                    "ttl_expiration_expression = 'CASE WHEN status IN (''completed'', ''failed'', "
+                    "''cancelled'', ''expired'') AND completed_at IS NOT NULL THEN completed_at + "
+                    "''01:00:00''::INTERVAL ELSE NULL END')"
+                )
+            },
+            None,
+            None,
+            "reset",
+        ),
+        ({"create_statement": 'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'off\')'}, None, None, "noop"),
+        (
+            {"create_statement": 'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'off\')'},
+            3600.0,
+            None,
+            "set",
+        ),
+        (
+            {
+                "create_statement": (
+                    'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'on\', '
+                    "ttl_expiration_expression = 'CASE WHEN state IN (''completed'', ''failed'', "
+                    "''cancelled'', ''expired'') AND done_at IS NOT NULL THEN done_at + "
+                    "''01:00:00''::INTERVAL ELSE NULL END')"
+                )
+            },
+            3600.0,
+            {"status": "state", "completed_at": "done_at"},
+            "noop",
+        ),
+        (
+            {
+                "create_statement": (
+                    'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'on\', '
+                    "ttl_expiration_expression = 'CASE WHEN status IN (''completed'', ''failed'', "
+                    "''cancelled'', ''expired'') AND completed_at IS NOT NULL THEN completed_at + "
+                    "''01:00:00''::INTERVAL ELSE NULL END')"
+                )
+            },
+            3600.0,
+            {"status": "state", "completed_at": "done_at"},
+            "set",
+        ),
+        (
+            {
+                "create_statement": (
+                    'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'on\', '
+                    "ttl_expiration_expression = 'CASE WHEN status IN (''completed'', ''failed'') "
+                    "AND completed_at IS NOT NULL THEN completed_at + ''01:00:00''::INTERVAL ELSE NULL END')"
+                )
+            },
+            3600.0,
+            None,
+            "set",
+        ),
+    ],
+)
+@pytest.mark.parametrize("adapter", ["cockroach_asyncpg", "cockroach_psycopg"])
+async def test_cockroach_reconcile_storage_options_converges_ttl(
+    adapter: "str",
+    row: "Any",
+    terminal_ttl: "float | None",
+    column_map: "dict[str, str] | None",
+    expected_action: "str",
+) -> "None":
+    """CockroachQueueStore converges row-level TTL across canonicalized SHOW CREATE TABLE responses."""
+    is_async = adapter == "cockroach_asyncpg"
+    store = create_queue_store(
+        _fake_config(adapter, is_async=is_async, dialect="postgres"), terminal_ttl=terminal_ttl, column_map=column_map
+    )
+    if is_async:
+        driver = _RecordingAsyncDriver(row=row)
+        await store.reconcile_storage_options_async(driver)
+        queries, executed = driver.queries, driver.executed
+    else:
+        sync_driver = _RecordingSyncDriver(row=row)
+        store.reconcile_storage_options_sync(sync_driver)
+        queries, executed = sync_driver.queries, sync_driver.executed
+
+    assert queries == ['SHOW CREATE TABLE "queue_task"']
+    if expected_action == "noop":
+        assert executed == []
+    elif expected_action == "reset":
+        assert executed == ['ALTER TABLE "queue_task" RESET (ttl)']
+    else:
+        assert len(executed) == 1
+        assert executed[0].startswith("ALTER TABLE \"queue_task\" SET (ttl = 'on', ttl_expiration_expression = ")
+        if column_map:
+            assert '"state"' in executed[0]
+            assert '"done_at"' in executed[0]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("adapter", "dialect", "terminal_ttl"),
+    [
+        ("sqlite", "sqlite", None),
+        ("asyncpg", "postgres", None),
+        ("cockroach_asyncpg", "postgres", 3600.0),
+        ("pymysql", "mysql", None),
+        ("pymssql", "mssql", None),
+        ("arrow_odbc", "tsql", None),
+        ("duckdb", "duckdb", None),
+    ],
+)
+async def test_manage_schema_false_suppresses_ddl_indexes_and_storage_options(
+    adapter: "str", dialect: "str", terminal_ttl: "float | None"
+) -> "None":
+    """manage_schema=False emits empty DDL/indexes and skips storage-option queries/writes."""
+    store = create_queue_store(
+        _fake_config(adapter, is_async=(adapter not in {"sqlite", "arrow_odbc"}), dialect=dialect),
+        manage_schema=False,
+        terminal_ttl=terminal_ttl,
+    )
+    sync_driver = _RecordingSyncDriver(row={"create_statement": "WITH (ttl = 'on')"})
+    async_driver = _RecordingAsyncDriver(row={"create_statement": "WITH (ttl = 'on')"})
+
+    assert store.create_table_statement() == ""
+    assert store.companion_indexes() == ()
+    assert store.create_statements() == []
+
+    store.reconcile_storage_options_sync(sync_driver)
+    await store.reconcile_storage_options_async(async_driver)
+    assert sync_driver.queries == []
+    assert sync_driver.executed == []
+    assert async_driver.queries == []
+    assert async_driver.executed == []

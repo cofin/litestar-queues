@@ -72,6 +72,12 @@ _TASK_COLUMNS = (
 )
 _DUE_STATUSES = ("pending", "scheduled")
 _MAX_REPAIR_INDEX_LENGTH = 63
+_SQLGLOT_DIALECT_ALIASES: "dict[str, str]" = {
+    "cockroachdb": "postgres",
+    "mariadb": "mysql",
+    "mssql": "tsql",
+    "postgresql": "postgres",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,11 +206,43 @@ class SQLSpecQueueStore:
             return False
         return _pyarrow_available()
 
+    def sqlglot_dialect(self) -> "str | None":
+        """Return the SQLGlot dialect name compatible with ``SchemaTarget.from_ddl``."""
+        dialect = self._data_dictionary_dialect_name()
+        if dialect is None:
+            return None
+        lowered = dialect.lower()
+        return _SQLGLOT_DIALECT_ALIASES.get(lowered, lowered)
+
+    def create_table_statement(self) -> "str":
+        """Return the table-only ``CREATE TABLE`` statement, or empty string when unmanaged."""
+        if not self._manage_schema:
+            return ""
+        return self._create_table_sql()
+
+    def companion_indexes(self) -> "tuple[tuple[str, str], ...]":
+        """Return ``(index_name, create_sql)`` pairs for non-table indexes."""
+        if not self._manage_schema:
+            return ()
+        return self._companion_index_specs(include_expiration=True)
+
+    def prepare_schema_sync(self, driver: "Any") -> "None":
+        """Prepare dialect capabilities using a synchronous driver prior to DDL inspection."""
+
+    async def prepare_schema_async(self, driver: "Any") -> "None":
+        """Prepare dialect capabilities using an asynchronous driver prior to DDL inspection."""
+
+    def reconcile_storage_options_sync(self, driver: "Any") -> "None":
+        """Reconcile dialect-specific table storage options on a synchronous driver."""
+
+    async def reconcile_storage_options_async(self, driver: "Any") -> "None":
+        """Reconcile dialect-specific table storage options on an asynchronous driver."""
+
     def create_statements(self) -> "list[str]":
         """Return statements that create the queue table and indexes."""
         if not self._manage_schema:
             return []
-        return [self._create_table_sql(), *self._create_index_statements()]
+        return [self.create_table_statement(), *(stmt for _, stmt in self.companion_indexes())]
 
     def drop_statements(self) -> "list[str]":
         """Return statements that drop queue artifacts."""
@@ -1440,36 +1478,54 @@ RETURNING {target}.{id_col} AS id
             rendered = rendered.replace(unsplit_target, split_target, 1)
         return rendered
 
-    def _create_index_statements(self, *, include_expiration: "bool" = True) -> "list[str]":
+    def _companion_index_specs(self, *, include_expiration: "bool" = True) -> "tuple[tuple[str, str], ...]":
         pending_columns = ["status", "queue", "execution_backend", "scheduled_at"]
         if include_expiration:
             pending_columns.append("expires_at")
         pending_columns.extend(("priority", "queued_at", "created_at"))
-        return [
-            self._to_sql(
-                sql
-                .create_index(self._index_name("dispatch_repair"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns(
-                    *(self._col(c) for c in ("execution_backend", "status", "dispatch_checked_at", "created_at", "id"))
-                )
+        dispatch_repair_name = self._index_name("dispatch_repair")
+        pending_name = self._index_name("pending")
+        heartbeat_name = self._index_name("heartbeat")
+        return (
+            (
+                dispatch_repair_name,
+                self._to_sql(
+                    sql
+                    .create_index(dispatch_repair_name)
+                    .if_not_exists()
+                    .on_table(self.table_name)
+                    .columns(
+                        *(
+                            self._col(c)
+                            for c in ("execution_backend", "status", "dispatch_checked_at", "created_at", "id")
+                        )
+                    )
+                ),
             ),
-            self._to_sql(
-                sql
-                .create_index(self._index_name("pending"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns(*(self._col(canonical) for canonical in pending_columns))
+            (
+                pending_name,
+                self._to_sql(
+                    sql
+                    .create_index(pending_name)
+                    .if_not_exists()
+                    .on_table(self.table_name)
+                    .columns(*(self._col(canonical) for canonical in pending_columns))
+                ),
             ),
-            self._to_sql(
-                sql
-                .create_index(self._index_name("heartbeat"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns(*(self._col(canonical) for canonical in ("status", "heartbeat_at")))
+            (
+                heartbeat_name,
+                self._to_sql(
+                    sql
+                    .create_index(heartbeat_name)
+                    .if_not_exists()
+                    .on_table(self.table_name)
+                    .columns(*(self._col(canonical) for canonical in ("status", "heartbeat_at")))
+                ),
             ),
-        ]
+        )
+
+    def _create_index_statements(self, *, include_expiration: "bool" = True) -> "list[str]":
+        return [stmt for _, stmt in self._companion_index_specs(include_expiration=include_expiration)]
 
     def _select_column(self, canonical: "str") -> "str":
         column = self._col(canonical)
