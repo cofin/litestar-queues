@@ -3,8 +3,13 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from litestar_queues.backends.sqlspec.extension import validate_migration_mode
+from litestar_queues.backends.sqlspec.extension import (
+    configure_events_migration_extension,
+    configure_queue_migration_extension,
+    validate_migration_mode,
+)
 from litestar_queues.backends.sqlspec.schema import (
+    DEFAULT_TABLE_NAME,
     resolve_column_map,
     validate_native_json_columns,
     validate_table_name,
@@ -160,11 +165,6 @@ class SQLSpecBackendConfig:
         this without importing the SQLSpec backend.
         """
         from litestar_queues.backends.sqlspec.backend import resolve_events_migration_backend
-        from litestar_queues.backends.sqlspec.extension import (
-            configure_events_migration_extension,
-            configure_queue_migration_extension,
-        )
-        from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME
 
         sqlspec_config = self.sqlspec_config
         if sqlspec_config is None and self.sqlspec is not None:
