@@ -12,6 +12,8 @@ import pytest
 
 pytest.importorskip("sqlspec")
 
+from sqlspec.migrations import SchemaTarget
+
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.stores import create_queue_store
 from litestar_queues.backends.sqlspec.stores.oracledb import OracledbAsyncQueueStore, OracledbSyncQueueStore
@@ -71,6 +73,39 @@ class FakeManagedDriver:
 
     def __init__(self, driver: "FakeSyncOracleDriver") -> "None":
         self._driver = driver
+
+
+class FakeDataDictionaryDriver:
+    """Fake sync Oracle driver exposing ``data_dictionary.get_version``."""
+
+    def __init__(self, version_info: "FakeOracleVersionInfo | None") -> "None":
+        self.calls = 0
+        self.version_info = version_info
+        self.data_dictionary = SimpleNamespace(get_version=self._get_version)
+
+    def _get_version(self, driver: "object") -> "FakeOracleVersionInfo | None":
+        assert driver is self
+        self.calls += 1
+        return self.version_info
+
+
+class FakeAsyncDataDictionaryDriver:
+    """Fake async Oracle driver exposing async ``data_dictionary.get_version``."""
+
+    def __init__(self, version_info: "FakeOracleVersionInfo | None") -> "None":
+        self.calls = 0
+        self.version_info = version_info
+        self.data_dictionary = SimpleNamespace(get_version=self._get_version)
+
+    async def _get_version(self, driver: "object") -> "FakeOracleVersionInfo | None":
+        assert driver is self
+        self.calls += 1
+        return self.version_info
+
+
+def _fail_provide_session(*_args: "Any", **_kwargs: "Any") -> "Any":
+    msg = "provide_session must not be called during prepare_schema"
+    raise AssertionError(msg)
 
 
 def _fake_oracle_config(
@@ -217,3 +252,189 @@ async def test_sqlspec_backend_oracledb_detects_json_storage_from_driver_version
     assert second_ddl == first_ddl
     raw_driver = getattr(driver, "_driver", driver)
     assert raw_driver.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("driver_factory", "expected_column_type", "expected_serialized_type", "expects_native_scalar"),
+    (
+        (lambda: FakeSyncOracleDriver(FakeOracleVersionInfo(native_json=True)), "JSON", str, True),
+        (
+            lambda: FakeSyncOracleDriver(FakeOracleVersionInfo(json_blob=True)),
+            "BLOB CHECK (task_args IS JSON)",
+            bytes,
+            True,
+        ),
+        (lambda: FakeSyncOracleDriver(FakeOracleVersionInfo(native_json=False, json_blob=False)), "BLOB", bytes, False),
+        (lambda: FakeSyncOracleDriver(None), "BLOB CHECK (task_args IS JSON)", bytes, True),
+        (lambda: FakeManagedDriver(FakeSyncOracleDriver(FakeOracleVersionInfo(native_json=True))), "JSON", str, True),
+        (lambda: FakeDataDictionaryDriver(FakeOracleVersionInfo(native_json=True)), "JSON", str, True),
+    ),
+)
+def test_prepare_schema_sync_detects_and_caches_without_session(
+    driver_factory: "Any",
+    expected_column_type: "str",
+    expected_serialized_type: "type[object]",
+    expects_native_scalar: "bool",
+) -> "None":
+    config = _fake_oracle_config(config_type_name="OracleSyncConfig")
+    config.provide_session = _fail_provide_session
+    store = create_queue_store(config, table_name="queue_tasks")
+    assert isinstance(store, OracledbSyncQueueStore)
+
+    driver = driver_factory()
+    raw_driver = getattr(driver, "_driver", driver)
+
+    store.prepare_schema_sync(driver)
+    assert raw_driver.calls == 1
+    store.prepare_schema_sync(driver)
+    assert raw_driver.calls == 1
+
+    ddl = store.create_table_statement()
+    assert f"task_args {expected_column_type} NOT NULL" in ddl
+    assert isinstance(store.serialize_json("kwargs_json", {"ok": True}), expected_serialized_type)
+    if expects_native_scalar:
+        assert store.deserialize_json("result_json", "ok") == "ok"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("config_type_name", "expected_store_type", "is_async"),
+    (("OracleSyncConfig", OracledbSyncQueueStore, False), ("OracleAsyncConfig", OracledbAsyncQueueStore, True)),
+)
+async def test_create_table_statement_before_prepare_schema_preserves_23c_detection(
+    config_type_name: "str", expected_store_type: "type[object]", is_async: "bool"
+) -> "None":
+    store = create_queue_store(_fake_oracle_config(config_type_name=config_type_name), table_name="queue_tasks")
+    assert isinstance(store, expected_store_type)
+    assert isinstance(store, (OracledbSyncQueueStore, OracledbAsyncQueueStore))
+
+    initial_ddl = store.create_table_statement()
+    assert "task_args BLOB CHECK (task_args IS JSON) NOT NULL" in initial_ddl
+    assert store._json_storage is None
+
+    version_info = FakeOracleVersionInfo(native_json=True)
+    driver: "FakeOracleDriver | FakeSyncOracleDriver"
+    if is_async:
+        driver = FakeOracleDriver(version_info)
+        await store.prepare_schema_async(driver)
+    else:
+        driver = FakeSyncOracleDriver(version_info)
+        store.prepare_schema_sync(driver)
+
+    assert driver.calls == 1
+    upgraded_ddl = store.create_table_statement()
+    assert "task_args JSON NOT NULL" in upgraded_ddl
+    assert "BLOB CHECK" not in upgraded_ddl
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("driver_factory", "expected_column_type"),
+    (
+        (lambda: FakeOracleDriver(FakeOracleVersionInfo(native_json=True)), "JSON"),
+        (lambda: FakeOracleDriver(FakeOracleVersionInfo(json_blob=True)), "BLOB CHECK (task_args IS JSON)"),
+        (lambda: FakeOracleDriver(FakeOracleVersionInfo(native_json=False, json_blob=False)), "BLOB"),
+        (lambda: FakeOracleDriver(None), "BLOB CHECK (task_args IS JSON)"),
+        (lambda: FakeManagedDriver(FakeSyncOracleDriver(FakeOracleVersionInfo(native_json=True))), "JSON"),
+        (lambda: FakeAsyncDataDictionaryDriver(FakeOracleVersionInfo(native_json=True)), "JSON"),
+    ),
+)
+async def test_prepare_schema_async_detects_and_caches(driver_factory: "Any", expected_column_type: "str") -> "None":
+    config = _fake_oracle_config(config_type_name="OracleAsyncConfig")
+    config.provide_session = _fail_provide_session
+    store = create_queue_store(config, table_name="queue_tasks")
+    assert isinstance(store, OracledbAsyncQueueStore)
+
+    driver = driver_factory()
+    raw_driver = getattr(driver, "_driver", driver)
+
+    await store.prepare_schema_async(driver)
+    assert raw_driver.calls == 1
+    await store.prepare_schema_async(driver)
+    assert raw_driver.calls == 1
+    assert f"task_args {expected_column_type} NOT NULL" in store.create_table_statement()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("config_type_name", "is_async"), (("OracleSyncConfig", False), ("OracleAsyncConfig", True)))
+@pytest.mark.parametrize(
+    ("json_storage", "expected_column_type"),
+    (("json", "JSON"), ("blob_json", "BLOB CHECK (task_args IS JSON)"), ("blob", "BLOB")),
+)
+async def test_explicit_json_storage_override_skips_driver_probe(
+    config_type_name: "str", is_async: "bool", json_storage: "str", expected_column_type: "str"
+) -> "None":
+    config = _fake_oracle_config(
+        config_type_name=config_type_name, extension_config={QUEUE_EXTENSION_NAME: {"json_storage": json_storage}}
+    )
+    config.provide_session = _fail_provide_session
+    store = create_queue_store(config, table_name="queue_tasks")
+    assert isinstance(store, (OracledbSyncQueueStore, OracledbAsyncQueueStore))
+
+    driver: "FakeOracleDriver | FakeSyncOracleDriver"
+    if is_async:
+        driver = FakeOracleDriver(FakeOracleVersionInfo(native_json=True))
+        await store.prepare_schema_async(driver)
+    else:
+        driver = FakeSyncOracleDriver(FakeOracleVersionInfo(native_json=True))
+        store.prepare_schema_sync(driver)
+
+    assert driver.calls == 0
+    assert f"task_args {expected_column_type} NOT NULL" in store.create_table_statement()
+
+
+def test_oracle_create_table_and_companion_indexes_split() -> "None":
+    store = create_queue_store(
+        _fake_oracle_config(config_type_name="OracleAsyncConfig"), table_name="queue_tasks_with_a_very_long_name"
+    )
+    assert isinstance(store, OracledbAsyncQueueStore)
+
+    table_ddl = store.create_table_statement()
+    indexes = store.companion_indexes()
+
+    assert store.sqlglot_dialect() == "oracle"
+    assert "CREATE TABLE queue_tasks_with_a_very_long_name" in table_ddl
+    assert "CREATE INDEX" not in table_ddl
+    assert len(indexes) == 3
+    (pending_name, pending_sql), (heartbeat_name, heartbeat_sql), (repair_name, repair_sql) = indexes
+    assert pending_name.endswith("_pending")
+    assert heartbeat_name.endswith("_heartbeat")
+    assert repair_name.endswith("_dispatch_repair")
+    assert len(pending_name) <= 30
+    assert len(heartbeat_name) <= 30
+    assert len(repair_name) <= 30
+    assert len({pending_name, heartbeat_name, repair_name}) == 3
+    assert f"CREATE INDEX {pending_name}" in pending_sql
+    assert f"CREATE INDEX {heartbeat_name}" in heartbeat_sql
+    assert f"CREATE INDEX {repair_name}" in repair_sql
+    assert store.create_statements() == [table_ddl, pending_sql, heartbeat_sql, repair_sql]
+
+
+@pytest.mark.parametrize(
+    ("json_storage", "in_memory"), (("json", False), ("blob_json", False), ("blob", False), ("json", True))
+)
+def test_oracle_schema_target_from_ddl_parses_25_columns(json_storage: "str", in_memory: "bool") -> "None":
+    store = create_queue_store(
+        _fake_oracle_config(
+            config_type_name="OracleAsyncConfig",
+            extension_config={QUEUE_EXTENSION_NAME: {"json_storage": json_storage, "in_memory": in_memory}},
+        ),
+        table_name="queue_tasks",
+    )
+    ddl = store.create_table_statement()
+    target = SchemaTarget.from_ddl(store.table_name, ddl, dialect=store.sqlglot_dialect())
+
+    assert target.create_table is not None
+    assert len(target.create_table.columns) == 25
+    assert ("INMEMORY PRIORITY HIGH" in ddl) is in_memory
+
+
+@pytest.mark.parametrize("config_type_name", ("OracleSyncConfig", "OracleAsyncConfig"))
+def test_oracle_manage_schema_false(config_type_name: "str") -> "None":
+    store = create_queue_store(
+        _fake_oracle_config(config_type_name=config_type_name), table_name="queue_tasks", manage_schema=False
+    )
+
+    assert store.create_table_statement() == ""
+    assert store.companion_indexes() == ()
+    assert store.create_statements() == []
