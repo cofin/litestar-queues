@@ -23,6 +23,7 @@ from litestar_queues.backends.base import (
     attempts_consumed,
     interruption_count,
     is_external_dispatch_reservation,
+    normalize_task_list_query,
     record_matches_filters,
     retry_schedule,
     stale_requeue_error,
@@ -37,6 +38,7 @@ from litestar_queues.models import (
     QueuedTaskRecord,
     QueueStatistics,
     StaleTaskRecoveryResult,
+    TaskListPage,
     TaskReservation,
     TaskStatus,
 )
@@ -57,6 +59,8 @@ _TERMINAL_STATUSES = {"cancelled", "completed", "expired", "failed"}
 _MAINTENANCE_INDEX_VERSION = "3"
 _CLAIMED_OUTCOME = 1
 _EXPIRED_OUTCOME = 2
+_LIST_HMGET_FIELDS = ("id", "task_name", "key", "created_score", "created_at")
+_LIST_HMGET_BATCH_SIZE = 500
 _DISPATCH_REPAIR_INDEX_SCRIPT = """
 local function remove_dispatch_repair(hkey, task_id)
     local index_key = redis.call('HGET', hkey, 'repair_index_key')
@@ -1233,6 +1237,43 @@ class RedisQueueBackend(BaseQueueBackend):
         if task_id is None:
             return None
         return await self.get_task(UUID(str(_decode(task_id))))
+
+    async def list_tasks(
+        self,
+        *,
+        status: "TaskStatus | Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+        limit: "int" = 50,
+        offset: "int" = 0,
+    ) -> "TaskListPage":
+        """Return a paginated slice of live task records matching optional filters.
+
+        Candidate IDs are resolved from existing Redis secondary index sets and
+        checked via batched ``HMGET`` before sorting descending by
+        ``(created_score, id)`` and hydrating only the requested page slice,
+        ensuring ``terminal_ttl``-expired hashes never inflate ``total`` or
+        produce short pages.
+
+        Returns:
+            Paginated task list page ordered newest first.
+        """
+        statuses, resolved_limit, resolved_offset = normalize_task_list_query(status=status, limit=limit, offset=offset)
+        if statuses == ():
+            return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=0)
+        client = await self._get_client()
+        candidate_ids = await self._list_candidate_ids(client, statuses=statuses, queue=queue)
+        if not candidate_ids:
+            return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=0)
+        matched = await self._load_listing_candidates(client, candidate_ids, task_name=task_name, key=key)
+        total = len(matched)
+        if total == 0 or resolved_offset >= total:
+            return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=total)
+        matched.sort(reverse=True)
+        page_ids = [task_id for _, task_id in matched[resolved_offset : resolved_offset + resolved_limit]]
+        items = await self._records_from_ids(page_ids)
+        return TaskListPage(items=items, limit=resolved_limit, offset=resolved_offset, total=total)
 
     async def list_pending(
         self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
@@ -2617,12 +2658,72 @@ class RedisQueueBackend(BaseQueueBackend):
         task_ids = {value for member_set in member_sets for value in member_set}
         return await self._records_from_ids(tuple(task_ids))
 
+    async def _list_candidate_ids(
+        self, client: "ClientLike", *, statuses: "tuple[TaskStatus, ...] | None", queue: "str | None"
+    ) -> "list[str]":
+        if statuses is None:
+            key = self._tasks_key if queue is None else self._queue_index_key(queue)
+            raw_ids: "Iterable[Any]" = await client.smembers(key)
+        elif len(statuses) == 1:
+            status_key = self._status_key(statuses[0])
+            raw_ids = (
+                await client.smembers(status_key)
+                if queue is None
+                else await _client_sinter(client, status_key, self._queue_index_key(queue))
+            )
+        elif queue is None:
+            raw_ids = await _client_sunion(client, *(self._status_key(item) for item in statuses))
+        else:
+            queue_key = self._queue_index_key(queue)
+            sets = await _pipeline_sinter(client, [(self._status_key(item), queue_key) for item in statuses])
+            raw_ids = {member for member_set in sets for member in member_set}
+        return sorted({str(_decode(task_id)) for task_id in raw_ids})
+
+    async def _load_listing_candidates(
+        self, client: "ClientLike", candidate_ids: "Sequence[str]", *, task_name: "str | None", key: "str | None"
+    ) -> "list[tuple[float, str]]":
+        matched: "list[tuple[float, str]]" = []
+        for start in range(0, len(candidate_ids), _LIST_HMGET_BATCH_SIZE):
+            batch_ids = candidate_ids[start : start + _LIST_HMGET_BATCH_SIZE]
+            task_keys = [f"{self._key_prefix}:task:{task_id}" for task_id in batch_ids]
+            batch_rows = await _pipeline_hmget(client, task_keys, _LIST_HMGET_FIELDS)
+            for values in batch_rows:
+                candidate = self._parse_listing_candidate(values, task_name=task_name, key=key)
+                if candidate is not None:
+                    matched.append(candidate)
+        return matched
+
+    @staticmethod
+    def _parse_listing_candidate(
+        values: "Sequence[Any]", *, task_name: "str | None", key: "str | None"
+    ) -> "tuple[float, str] | None":
+        if len(values) < len(_LIST_HMGET_FIELDS):
+            return None
+        raw_id = _decode(values[0])
+        if raw_id in {None, ""}:
+            return None
+        raw_task_name = _decode(values[1])
+        if task_name is not None and (raw_task_name is None or str(raw_task_name) != task_name):
+            return None
+        raw_key = _decode(values[2])
+        resolved_key = str(raw_key) if raw_key not in {None, ""} else None
+        if key is not None and resolved_key != key:
+            return None
+        raw_score = _decode(values[3])
+        raw_created_at = _decode(values[4])
+        score = (
+            float(str(raw_score))
+            if raw_score not in {None, ""}
+            else _maintenance_score(_deserialize_datetime(raw_created_at))
+        )
+        return (score, str(raw_id))
+
     async def _require_maintenance_indexes(self) -> "None":
         client = await self._get_client()
         outcome = await _eval_script(
             client,
             _CHECK_MAINTENANCE_INDEX_SCRIPT,
-            [self._maintenance_index_version_key, f"{self._key_prefix}:tasks"],
+            [self._maintenance_index_version_key, self._tasks_key],
             [_MAINTENANCE_INDEX_VERSION],
         )
         version = str(_decode(outcome[0])) if outcome else ""
@@ -2652,6 +2753,10 @@ class RedisQueueBackend(BaseQueueBackend):
     async def _client_hgetall(self, name: "str") -> "dict[str, Any]":
         client = await self._get_client()
         return _decode_mapping(await client.hgetall(name))
+
+    @property
+    def _tasks_key(self) -> "str":
+        return f"{self._key_prefix}:tasks"
 
     @property
     def _keys_key(self) -> "str":
@@ -2855,6 +2960,43 @@ async def _pipeline_scard(client: "ClientLike", keys: "list[str]") -> "list[int]
     for key in keys:
         pipeline.scard(key)
     return [int(result) for result in await _execute_pipeline(pipeline)]
+
+
+async def _client_sinter(client: "ClientLike", *keys: "str") -> "set[Any]":
+    if not keys:
+        return set()
+    result = cast("Any", client).sinter(*keys)
+    if inspect.isawaitable(result):
+        result = await result
+    return set(result or ())
+
+
+async def _client_sunion(client: "ClientLike", *keys: "str") -> "set[Any]":
+    if not keys:
+        return set()
+    result = cast("Any", client).sunion(*keys)
+    if inspect.isawaitable(result):
+        result = await result
+    return set(result or ())
+
+
+async def _pipeline_sinter(client: "ClientLike", key_pairs: "Sequence[tuple[str, str]]") -> "list[set[Any]]":
+    if not key_pairs:
+        return []
+    pipeline = _create_pipeline(client)
+    for left, right in key_pairs:
+        cast("Any", pipeline).sinter(left, right)
+    return [set(result or ()) for result in await _execute_pipeline(pipeline)]
+
+
+async def _pipeline_hmget(client: "ClientLike", keys: "Sequence[str]", fields: "Sequence[str]") -> "list[list[Any]]":
+    if not keys:
+        return []
+    pipeline = _create_pipeline(client)
+    field_list = list(fields)
+    for key in keys:
+        cast("Any", pipeline).hmget(key, field_list)
+    return [list(result or ()) for result in await _execute_pipeline(pipeline)]
 
 
 def _utc_now() -> "datetime":
