@@ -29,7 +29,7 @@ from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend, SQLSpecWorkerWakeupConfig
 from litestar_queues.backends.sqlspec.backend import _adapter_wakeup_transport
 from litestar_queues.backends.sqlspec.config import DEFAULT_WAKEUP_CHANNEL
-from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
+from litestar_queues.backends.sqlspec.extension import DEFAULT_MIGRATION_MODE, QUEUE_EXTENSION_NAME
 from litestar_queues.exceptions import QueueConfigurationError
 from tests.integration.backends.sqlspec.conftest import StubAsyncEventChannel
 
@@ -566,7 +566,11 @@ def test_queue_plugin_registers_events_migration_for_capable_adapter() -> "None"
             initialize_schedules=False,
         )
     ).on_cli_init(Group())
-    assert (capable_config.extension_config or {}).get("events") == {"backend": "notify_queue"}
+    assert (capable_config.extension_config or {}).get("events") == {
+        "backend": "notify_queue",
+        "migrations_path": "sqlspec.extensions.events:migrations",
+        "migration_mode": DEFAULT_MIGRATION_MODE,
+    }
     assert "events" in capable_config.migration_config.get("include_extensions", [])
 
     polling_config = AiosqliteConfig(connection_config={"database": ":memory:"})

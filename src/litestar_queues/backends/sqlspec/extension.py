@@ -2,6 +2,11 @@
 
 from typing import TYPE_CHECKING, Any
 
+from litestar_queues.backends.sqlspec._typing import (
+    DEFAULT_MIGRATION_MODE,
+    VALID_MIGRATION_MODES,
+    validate_migration_mode,
+)
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
     event_history_table_name_for,
@@ -18,18 +23,22 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-    from litestar_queues.backends.sqlspec._typing import SQLSpecConfig
+    from litestar_queues.backends.sqlspec._typing import ExtensionMigrationMode, SQLSpecConfig
     from litestar_queues.events import EventHistoryExtraColumn
 
 __all__ = (
+    "DEFAULT_MIGRATION_MODE",
     "QUEUE_EXTENSION_NAME",
+    "VALID_MIGRATION_MODES",
     "configure_events_migration_extension",
     "configure_queue_migration_extension",
     "queue_migration_directory",
+    "validate_migration_mode",
 )
 
 QUEUE_EXTENSION_NAME = "litestar_queues"
 _EVENTS_EXTENSION_NAME = "events"
+_EVENTS_MIGRATIONS_SPEC = "sqlspec.extensions.events:migrations"
 
 
 def configure_events_migration_extension(
@@ -38,13 +47,16 @@ def configure_events_migration_extension(
     backend: "str | None",
     queue_table: "str | None" = None,
     manage_schema: "bool" = True,
+    migration_mode: "ExtensionMigrationMode | None" = None,
 ) -> "None":
     """Register SQLSpec's events queue migration for native wakeup provisioning.
 
-    Writing the events extension settings makes SQLSpec auto-include its bundled
-    events queue migration on migrate-up, so a capability-native backend gets its
-    durable events queue table with no manual step. Existing events settings are
-    preserved; only unset keys are filled in.
+    Registering the events extension via ``add_extension_migrations`` lets
+    SQLSpec provision its bundled events queue table on migrate-up using the
+    requested ``migration_mode`` (defaulting to ``DEFAULT_MIGRATION_MODE`` when
+    ``None``), so a capability-native backend gets its durable events queue
+    table with no manual step. Existing events settings and adopter-supplied
+    ``migrations_path`` values are preserved; only unset keys are filled in.
 
     The events queue table is package-owned, so ``manage_schema=False`` leaves
     nothing registered: any events settings and packaged revision already on the
@@ -57,6 +69,8 @@ def configure_events_migration_extension(
     package's, so an application may have registered it for its own use, and a
     transport that needs no events table is not grounds for removing it.
     """
+    resolved_mode = DEFAULT_MIGRATION_MODE if migration_mode is None else migration_mode
+    validated_mode = validate_migration_mode(resolved_mode)
     if not manage_schema:
         sqlspec_config.remove_extension_migrations(_EVENTS_EXTENSION_NAME)
         return
@@ -67,9 +81,10 @@ def configure_events_migration_extension(
     events_settings.setdefault("backend", backend)
     if queue_table is not None:
         events_settings.setdefault("queue_table", queue_table)
-    extension_config[_EVENTS_EXTENSION_NAME] = events_settings
-    sqlspec_config.extension_config = extension_config
-    sqlspec_config.set_migration_config(dict(sqlspec_config.migration_config or {}))
+    migrations_path = events_settings.get("migrations_path") or _EVENTS_MIGRATIONS_SPEC
+    sqlspec_config.add_extension_migrations(
+        _EVENTS_EXTENSION_NAME, migrations_path, events_settings, migration_mode=validated_mode
+    )
 
 
 def queue_migration_directory() -> "Path":
@@ -89,15 +104,20 @@ def configure_queue_migration_extension(
     column_map: "Mapping[str, str] | None" = None,
     manage_schema: "bool" = True,
     terminal_ttl: "float | None" = None,
+    migration_mode: "ExtensionMigrationMode | None" = None,
 ) -> "None":
     """Register the packaged queue migrations with SQLSpec's extension runner.
 
+    Validates and forwards ``migration_mode`` (defaulting to
+    ``DEFAULT_MIGRATION_MODE`` when ``None``) to ``add_extension_migrations``.
     ``manage_schema=False`` declares that the application owns the queue schema,
     so nothing stays registered: no extension settings, no migration directory,
     and therefore no packaged revision for SQLSpec to discover or apply. A
     registration written by an earlier call on the same config is removed, so the
     postcondition holds regardless of call order.
     """
+    resolved_mode = DEFAULT_MIGRATION_MODE if migration_mode is None else migration_mode
+    validated_mode = validate_migration_mode(resolved_mode)
     if not manage_schema:
         sqlspec_config.remove_extension_migrations(QUEUE_EXTENSION_NAME)
         return
@@ -112,7 +132,9 @@ def configure_queue_migration_extension(
         column_map=column_map,
         terminal_ttl=terminal_ttl,
     )
-    sqlspec_config.add_extension_migrations(QUEUE_EXTENSION_NAME, queue_migration_directory(), queue_settings)
+    sqlspec_config.add_extension_migrations(
+        QUEUE_EXTENSION_NAME, queue_migration_directory(), queue_settings, migration_mode=validated_mode
+    )
 
 
 def _configure_extension_settings(

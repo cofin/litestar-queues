@@ -523,7 +523,7 @@ async def test_initial_migration_applies_configured_terminal_ttl(adapter: "str",
     sqlspec_config = _fake_config(adapter, is_async=(adapter != "spanner"), dialect="postgres")
     sqlspec_config.migration_config = {}
     sqlspec_config.set_migration_config = lambda cfg: setattr(sqlspec_config, "migration_config", cfg)
-    sqlspec_config.add_extension_migrations = lambda *_args: None
+    sqlspec_config.add_extension_migrations = lambda *_args, **_kwargs: None
     sqlspec_config.remove_extension_migrations = lambda *_args: None
 
     backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config, terminal_ttl=3600.0)
