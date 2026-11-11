@@ -28,13 +28,14 @@ API reference for the authoritative queue storage contract (`BaseQueueBackend`),
         - fail_task
         - cancel_task
         - cancel_tasks
-        - expire_pending
+        - expire_overdue
         - requeue_stale_running
         - touch_heartbeats
         - cleanup_terminal
-        - reset_task_reservation
+        - reset_identity
         - get_task
         - get_tasks
+        - list_tasks
         - get_statistics
 
 ## SQLSpec Backend
@@ -56,7 +57,6 @@ API reference for the authoritative queue storage contract (`BaseQueueBackend`),
         - open
         - close
         - create_schema
-        - drop_schema
 
 ::: litestar_queues.backends.sqlspec.stores.base.SQLSpecQueueStore
     options:
