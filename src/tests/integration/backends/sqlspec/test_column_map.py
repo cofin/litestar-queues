@@ -14,6 +14,7 @@ pytest.importorskip("sqlspec")
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.stores import create_queue_store
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.models import TaskListPage
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -231,6 +232,140 @@ async def test_column_map_operates_against_adopter_owned_sqlite_table(
 
     assert row == ("tasks.adopter", '{"attempt":1}', '{"ok":true}', '{"tenant":"acme"}', "job-123")
     assert tables == {"adopter_jobs"}
+
+
+def test_column_map_resolves_list_tasks_and_listing_indexes(
+    tmp_path: "Path", sqlite_config_factory: 'Callable[["Path"], AiosqliteConfig]'
+) -> "None":
+    """Listing DDL, index bounds, count_tasks, and list_tasks honor column_map."""
+    store = create_queue_store(
+        sqlite_config_factory(tmp_path / "list-colmap.db"), table_name="adopter_jobs", column_map=ADOPTER_COLUMN_MAP
+    )
+    long_table = "a" * 62
+    long_store = create_queue_store(sqlite_config_factory(tmp_path / "long-name.db"), table_name=long_table)
+
+    companion = dict(store.companion_indexes())
+    ddl_sql = "\n".join(store.create_statements())
+    long_companion = dict(long_store.companion_indexes())
+    long_created_name = long_store._index_name("created")
+    long_list_name = long_store._index_name("list")
+
+    assert companion["ix_adopter_jobs_created"] == (
+        'CREATE INDEX IF NOT EXISTS "ix_adopter_jobs_created" ON "adopter_jobs"("created" DESC, "task_id" DESC)'
+    )
+    assert companion["ix_adopter_jobs_list"] == (
+        'CREATE INDEX IF NOT EXISTS "ix_adopter_jobs_list" ON "adopter_jobs"("state", "lane", "created" DESC, "task_id" DESC)'
+    )
+    assert companion["ix_adopter_jobs_created"] in ddl_sql
+    assert companion["ix_adopter_jobs_list"] in ddl_sql
+    assert len(long_created_name) <= 63
+    assert len(long_list_name) <= 63
+    assert long_created_name != long_list_name
+    assert long_created_name in long_companion
+    assert long_list_name in long_companion
+
+    count_sql = (
+        store
+        .count_tasks(statuses=("pending", "failed"), queue="critical", task_name="tasks.adopter", key="unique-1")
+        .build(dialect="sqlite")
+        .sql
+    )
+    list_sql = (
+        store
+        .list_tasks(
+            statuses=("pending", "failed"),
+            queue="critical",
+            task_name="tasks.adopter",
+            key="unique-1",
+            limit=10,
+            offset=2,
+        )
+        .build(dialect="sqlite")
+        .sql
+    )
+    normalized_count = count_sql.replace('"adopter_jobs".', "")
+    normalized_list = list_sql.replace('"adopter_jobs".', "")
+
+    assert 'COUNT(*) AS "total"' in normalized_count
+    assert '"state" IN' in normalized_count
+    assert '"lane" =' in normalized_count
+    assert '"function" =' in normalized_count
+    assert '"key" =' in normalized_count
+    assert '"state" IN' in normalized_list
+    assert '"lane" =' in normalized_list
+    assert '"function" =' in normalized_list
+    assert '"key" =' in normalized_list
+    assert "ORDER BY" in normalized_list
+    assert '"created" DESC' in normalized_list
+    assert '"task_id" DESC' in normalized_list
+    assert normalized_list.index('"created" DESC') < normalized_list.index('"task_id" DESC')
+    assert "LIMIT 10" in normalized_list
+    assert "OFFSET 2" in normalized_list
+    assert '"task_id" AS "id"' in normalized_list
+    assert '"function" AS "task_name"' in normalized_list
+    assert '"lane" AS "queue"' in normalized_list
+    assert '"state" AS "status"' in normalized_list
+    assert '"created" AS "created_at"' in normalized_list
+    assert '"key" AS "task_key"' in normalized_list
+
+
+async def test_column_map_list_tasks_operates_against_adopter_owned_sqlite_table(
+    tmp_path: "Path", sqlite_config_factory: 'Callable[["Path"], AiosqliteConfig]'
+) -> "None":
+    """SQLSpecQueueBackend.list_tasks works end-to-end against an adopter-owned table."""
+    db_path = tmp_path / "adopter-list.db"
+    _create_adopter_sqlite_schema(db_path)
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=sqlite_config_factory(db_path),
+            queue_table_name="adopter_jobs",
+            column_map=ADOPTER_COLUMN_MAP,
+            manage_schema=False,
+        )
+    )
+
+    await backend.open()
+    try:
+        completed_record = await backend.enqueue(
+            "tasks.adopter", args=("account-1",), kwargs={"attempt": 1}, queue="critical", key="unique-1"
+        )
+        claimed = await backend.claim_task(completed_record.id)
+        assert claimed is not None
+        await backend.complete_task(claimed.id, result={"ok": True})
+
+        pending_record = await backend.enqueue("tasks.adopter", queue="critical")
+        await backend.enqueue("tasks.other", queue="other")
+
+        keyed_page = await backend.list_tasks(
+            status=("pending", "completed"),
+            queue="critical",
+            task_name="tasks.adopter",
+            key="unique-1",
+            limit=2,
+            offset=0,
+        )
+        first_slice = await backend.list_tasks(
+            status=("pending", "completed"), queue="critical", task_name="tasks.adopter", limit=1, offset=0
+        )
+        second_slice = await backend.list_tasks(
+            status=("pending", "completed"), queue="critical", task_name="tasks.adopter", limit=1, offset=1
+        )
+    finally:
+        await backend.close()
+
+    assert isinstance(keyed_page, TaskListPage)
+    assert keyed_page.total == 1
+    assert keyed_page.limit == 2
+    assert keyed_page.offset == 0
+    assert keyed_page.has_more is False
+    assert [item.id for item in keyed_page.items] == [completed_record.id]
+    assert keyed_page.items[0].kwargs == {"attempt": 1}
+    assert keyed_page.items[0].key == "unique-1"
+    assert first_slice.total == 2
+    assert first_slice.has_more is True
+    assert second_slice.total == 2
+    assert second_slice.has_more is False
+    assert {first_slice.items[0].id, second_slice.items[0].id} == {completed_record.id, pending_record.id}
 
 
 @pytest.mark.parametrize("migration_mode", ["versioned", "reconcile"])

@@ -62,7 +62,7 @@ from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
 from litestar_queues.events import QueueEventsConfig
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import QueuedTaskRecord
+from litestar_queues.models import QueuedTaskRecord, TaskListPage
 from tests.integration._backends import QUEUE_BACKENDS
 from tests.integration._names import table_name_for_test
 from tests.integration.backends.sqlspec._schema import bootstrap_queue_schema, run_queue_migrations
@@ -2956,3 +2956,219 @@ async def test_pymssql_native_commit_rollback_after_write_error(
             driver.execute_script(f"DROP TABLE IF EXISTS [{table}]")
             driver.commit()
         await manager.close_all_pools()
+
+
+@pytest.mark.parametrize(("limit", "offset"), ((5, 0), (10, 5)))
+@pytest.mark.parametrize(
+    ("adapter_name", "dialect", "config_type_name"),
+    (
+        ("aiosqlite", "sqlite", "AiosqliteConfig"),
+        ("duckdb", "duckdb", "DuckDBConfig"),
+        ("asyncpg", "postgres", "AsyncpgConfig"),
+        ("asyncmy", "mysql", "AsyncmyConfig"),
+        ("oracledb", "oracle", "OracleSyncConfig"),
+        ("pymssql", "tsql", "PymssqlConfig"),
+        ("spanner", "spanner", "SpannerConfig"),
+    ),
+)
+def test_sqlspec_store_list_tasks_and_count_tasks_compile_across_dialects(
+    adapter_name: "str", dialect: "str", config_type_name: "str", limit: "int", offset: "int"
+) -> "None":
+    """Store list_tasks and count_tasks compile valid dialect pagination and empty-status SQL."""
+    store = create_queue_store(
+        _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name), table_name="queue_task"
+    )
+
+    built = store.list_tasks(
+        statuses=("pending", "failed"), queue="critical", task_name="tasks.sync", key="k1", limit=limit, offset=offset
+    ).build(dialect=dialect)
+    empty_list = store.list_tasks(statuses=(), limit=limit, offset=offset).build(dialect=dialect)
+    empty_count = store.count_tasks(statuses=()).build(dialect=dialect)
+    upper_sql = built.sql.upper()
+    created_order = {
+        "sqlite": '"CREATED_AT" DESC',
+        "duckdb": '"CREATED_AT" DESC',
+        "postgres": '"CREATED_AT" DESC',
+        "mysql": "`CREATED_AT` DESC",
+        "spanner": "`CREATED_AT` DESC",
+        "tsql": "[CREATED_AT] DESC",
+        "oracle": "CREATED_AT DESC",
+    }[dialect]
+    id_order = {
+        "sqlite": '"ID" DESC',
+        "duckdb": '"ID" DESC',
+        "postgres": '"ID" DESC',
+        "mysql": "`ID` DESC",
+        "spanner": "`ID` DESC",
+        "tsql": "[ID] DESC",
+        "oracle": "ID DESC",
+    }[dialect]
+
+    assert "ORDER BY" in upper_sql
+    assert created_order in upper_sql
+    assert id_order in upper_sql
+    assert upper_sql.index(created_order) < upper_sql.index(id_order)
+    if dialect in {"oracle", "tsql"}:
+        assert f"OFFSET {offset} ROWS" in upper_sql
+        assert f"FETCH FIRST {limit} ROWS ONLY" in upper_sql
+    else:
+        assert f"LIMIT {limit}" in upper_sql
+        assert f"OFFSET {offset}" in upper_sql
+    assert "LIMIT 0" not in upper_sql
+    assert "FETCH FIRST 0" not in upper_sql
+    assert "WHERE FALSE" not in empty_list.sql.upper()
+    assert "IN ()" not in empty_list.sql.upper()
+    assert "IS NULL" in empty_list.sql.upper()
+    assert "WHERE FALSE" not in empty_count.sql.upper()
+    assert "IN ()" not in empty_count.sql.upper()
+    assert "IS NULL" in empty_count.sql.upper()
+
+
+@pytest.mark.parametrize(
+    ("table_name", "expected_table_sql"), (("queue_task", "[queue_task]"), ("app.queue_task", "[app].[queue_task]"))
+)
+def test_sqlspec_arrow_odbc_drop_statements_and_companion_indexes(
+    table_name: "str", expected_table_sql: "str"
+) -> "None":
+    """ArrowOdbcQueueStore creates and drops created/list indexes with T-SQL ON <table> syntax."""
+    store = create_queue_store(
+        _fake_adapter_config("arrow_odbc", dialect="tsql", config_type_name="ArrowOdbcConfig"), table_name=table_name
+    )
+
+    companion = dict(store.companion_indexes())
+    created_sql = "\n".join(store.create_statements())
+    drops = store.drop_statements()
+
+    assert isinstance(store, ArrowOdbcQueueStore)
+    assert store._index_name("created") in companion
+    assert store._index_name("list") in companion
+    assert store._index_name("created") in created_sql
+    assert store._index_name("list") in created_sql
+    for suffix in ("list", "created", "heartbeat", "pending"):
+        assert f"DROP INDEX IF EXISTS [{store._index_name(suffix)}] ON {expected_table_sql}" in drops
+
+    unmanaged = create_queue_store(
+        _fake_adapter_config("arrow_odbc", dialect="tsql", config_type_name="ArrowOdbcConfig"),
+        table_name=table_name,
+        manage_schema=False,
+    )
+    assert unmanaged.companion_indexes() == ()
+    assert unmanaged.create_statements() == []
+    assert unmanaged.drop_statements() == []
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "dialect", "config_type_name"),
+    (
+        ("sqlite", "sqlite", "SqliteConfig"),
+        ("aiosqlite", "sqlite", "AiosqliteConfig"),
+        ("duckdb", "duckdb", "DuckDBConfig"),
+    ),
+)
+def test_sqlspec_base_store_companion_indexes_and_drop_statements_omit_on_table(
+    adapter_name: "str", dialect: "str", config_type_name: "str"
+) -> "None":
+    """SQLite and DuckDB inherit created/list companion indexes and drop without ON <table>."""
+    store = create_queue_store(
+        _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name), table_name="queue_task"
+    )
+
+    companion = dict(store.companion_indexes())
+    drops = store.drop_statements()
+
+    assert "ix_queue_task_created" in companion
+    assert "ix_queue_task_list" in companion
+    assert 'DROP INDEX IF EXISTS "ix_queue_task_list"' in drops
+    assert 'DROP INDEX IF EXISTS "ix_queue_task_created"' in drops
+    assert 'DROP INDEX IF EXISTS "ix_queue_task_heartbeat"' in drops
+    assert 'DROP INDEX IF EXISTS "ix_queue_task_pending"' in drops
+    assert all(" ON " not in statement for statement in drops if statement.startswith("DROP INDEX"))
+
+
+async def test_sqlspec_backend_list_tasks_empty_status_short_circuits_without_session() -> "None":
+    """Empty status sequences return an empty page without opening a database session."""
+    backend = SQLSpecQueueBackend()
+
+    default_page = await backend.list_tasks(status=())
+    paged = await backend.list_tasks(status=[], limit=10, offset=5)
+
+    assert default_page == TaskListPage(items=[], limit=50, offset=0, total=0)
+    assert default_page.has_more is False
+    assert paged == TaskListPage(items=[], limit=10, offset=5, total=0)
+    assert paged.has_more is False
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {"limit": 0},
+        {"limit": -1},
+        {"limit": True},
+        {"offset": -1},
+        {"offset": False},
+        {"status": "bogus"},
+        {"status": b"pending"},
+    ),
+)
+async def test_sqlspec_backend_list_tasks_rejects_invalid_query_before_session(kwargs: "dict[str, Any]") -> "None":
+    """Invalid list_tasks parameters raise QueueConfigurationError without opening a session."""
+    backend = SQLSpecQueueBackend()
+
+    with pytest.raises(QueueConfigurationError):
+        await backend.list_tasks(**kwargs)
+
+
+async def _assert_list_tasks_single_session_skip(
+    backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    await backend.enqueue("tasks.list.one", queue="alpha")
+    await backend.enqueue("tasks.list.two", queue="alpha")
+
+    original_session = SQLSpecQueueBackend._session
+    original_select_rows = SQLSpecQueueBackend._select_rows
+    counts = {"sessions": 0, "selects": 0}
+
+    def counting_session(self: "SQLSpecQueueBackend", *args: "Any", **kwargs: "Any") -> "Any":
+        counts["sessions"] += 1
+        return original_session(self, *args, **kwargs)
+
+    async def counting_select_rows(
+        self: "SQLSpecQueueBackend", driver: "Any", statement: "Any", *parameters: "Any", **kwargs: "Any"
+    ) -> "list[dict[str, Any]]":
+        counts["selects"] += 1
+        return await original_select_rows(self, driver, statement, *parameters, **kwargs)
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "_session", counting_session)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_select_rows", counting_select_rows)
+
+    past_end = await backend.list_tasks(limit=5, offset=10)
+    assert past_end == TaskListPage(items=[], limit=5, offset=10, total=2)
+    assert counts == {"sessions": 1, "selects": 1}
+
+    counts["sessions"] = 0
+    counts["selects"] = 0
+    zero_total = await backend.list_tasks(queue="missing")
+    assert zero_total == TaskListPage(items=[], limit=50, offset=0, total=0)
+    assert counts == {"sessions": 1, "selects": 1}
+
+    counts["sessions"] = 0
+    counts["selects"] = 0
+    first_page = await backend.list_tasks(limit=1, offset=0)
+    assert first_page.total == 2
+    assert len(first_page.items) == 1
+    assert first_page.has_more is True
+    assert counts == {"sessions": 1, "selects": 2}
+
+
+async def test_sqlspec_backend_list_tasks_runs_single_session_and_skips_empty_page(
+    sqlspec_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """Count and page queries share one session, skipping row fetch when total == 0 or offset >= total."""
+    await _assert_list_tasks_single_session_skip(sqlspec_backend, monkeypatch)
+
+
+async def test_sqlspec_duckdb_list_tasks_runs_single_session_and_skips_empty_page(
+    duckdb_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """DuckDB count and page queries share one session and skip row fetch on empty pages."""
+    await _assert_list_tasks_single_session_skip(duckdb_backend, monkeypatch)

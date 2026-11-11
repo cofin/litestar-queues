@@ -23,6 +23,7 @@ from litestar_queues.backends.base import (
     attempts_consumed,
     interruption_count,
     is_external_dispatch_reservation,
+    normalize_task_list_query,
     record_matches_filters,
     retry_schedule,
     stale_requeue_error,
@@ -59,6 +60,7 @@ from litestar_queues.models import (
     QueuedTaskRecord,
     QueueStatistics,
     StaleTaskRecoveryResult,
+    TaskListPage,
     TaskRequest,
     TaskReservation,
     TaskStatus,
@@ -678,6 +680,53 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         """Return due pending or scheduled tasks ordered for execution."""
         rows = await self._select_pending_rows(limit=limit, queue=queue, execution_backend=execution_backend)
         return [self._record_from_row(row) for row in rows]
+
+    async def list_tasks(
+        self,
+        *,
+        status: "TaskStatus | Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+        limit: "int" = 50,
+        offset: "int" = 0,
+    ) -> "TaskListPage":
+        """Return a paginated slice of queued tasks ordered newest first.
+
+        Returns:
+            A ``TaskListPage`` containing hydrated task records and pagination metadata.
+
+        Raises:
+            QueueConfigurationError: If ``status``, ``limit``, or ``offset`` is invalid.
+        """
+        statuses, resolved_limit, resolved_offset = normalize_task_list_query(status=status, limit=limit, offset=offset)
+        if statuses == ():
+            return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=0)
+        store = self._get_store()
+        async with self._session() as driver:
+            count_row = await self._select_one_row(
+                driver, store.count_tasks(statuses=statuses, queue=queue, task_name=task_name, key=key)
+            )
+            total = int(count_row["total"]) if count_row is not None else 0
+            if total == 0 or resolved_offset >= total:
+                return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=total)
+            rows = await self._select_rows(
+                driver,
+                store.list_tasks(
+                    statuses=statuses,
+                    queue=queue,
+                    task_name=task_name,
+                    key=key,
+                    limit=resolved_limit,
+                    offset=resolved_offset,
+                ),
+            )
+        return TaskListPage(
+            items=[self._record_from_row(row) for row in rows],
+            limit=resolved_limit,
+            offset=resolved_offset,
+            total=total,
+        )
 
     async def claim_task(
         self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
