@@ -105,11 +105,79 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         resolved = validate_event_extra_filter(extra, self._extra_columns)
         return tuple(resolved.items())
 
+    def create_table_statement(self) -> "str":
+        """Return table-only event-log DDL, omitting inline MySQL indexes."""
+        if not self._manage_schema:
+            return ""
+        return self._create_event_table_sql(include_indexes=False)
+
+    def companion_indexes(self) -> "tuple[tuple[str, str], ...]":
+        """Return ``(index_name, create_sql)`` tuples for all event-history indexes."""
+        if not self._manage_schema:
+            return ()
+        dialect = self._event_dialect_name()
+        definitions = self._event_index_definitions()
+        if dialect == "mysql":
+            return tuple(
+                (
+                    self._index_name(suffix),
+                    (
+                        f"ALTER TABLE {self._quoted_table_name()} ADD INDEX {self._quoted_index_name(suffix)} "
+                        f"({', '.join(self._quoted_col(col) for col in cols)})"
+                    ),
+                )
+                for suffix, cols in definitions
+            )
+        if dialect == "mssql":
+            return tuple(
+                (
+                    self._index_name(suffix),
+                    (
+                        "IF NOT EXISTS (SELECT 1 FROM sys.indexes "  # noqa: S608
+                        f"WHERE name = N'{self._index_name(suffix)}' AND object_id = OBJECT_ID(N'{self.table_name}')) "
+                        f"CREATE INDEX {self._quoted_index_name(suffix)} ON {self._quoted_table_name()} "
+                        f"({', '.join(self._quoted_col(col) for col in cols)});"
+                    ),
+                )
+                for suffix, cols in definitions
+            )
+        if dialect == "oracle":
+            return tuple(
+                (self._index_name(suffix), self._oracle_create_index_sql(suffix, cols)) for suffix, cols in definitions
+            )
+        return tuple(
+            (
+                self._index_name(suffix),
+                self._to_sql(
+                    sql
+                    .create_index(self._index_name(suffix))
+                    .if_not_exists()
+                    .on_table(self.table_name)
+                    .columns(*(self._col(col) for col in cols))
+                ),
+            )
+            for suffix, cols in definitions
+        )
+
     def create_statements(self) -> "list[str]":
         """Return statements that create the event-log table and indexes."""
         if not self._manage_schema:
             return []
-        return [self._create_event_table_sql(), *self._create_event_index_statements()]
+        if self._event_dialect_name() == "mysql":
+            return [self._create_event_table_sql(include_indexes=True)]
+        return [self.create_table_statement(), *(stmt for _, stmt in self.companion_indexes())]
+
+    def prepare_schema_sync(self, driver: "Any") -> "None":
+        """No-op hook preventing queue-store schema prep leakage."""
+
+    async def prepare_schema_async(self, driver: "Any") -> "None":
+        """No-op hook preventing queue-store schema prep leakage."""
+
+    def reconcile_storage_options_sync(self, driver: "Any") -> "None":
+        """No-op hook preventing queue-store storage option leakage."""
+
+    async def reconcile_storage_options_async(self, driver: "Any") -> "None":
+        """No-op hook preventing queue-store storage option leakage."""
 
     def drop_statements(self) -> "list[str]":
         """Return statements that drop event-log artifacts."""
@@ -337,37 +405,52 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
             statement = statement.column(column.name, self._indexed_text_type())
         return statement
 
-    def _create_event_table_sql(self) -> "str":
-        if self._event_dialect_name() == "mssql":
-            cols = [
-                f"{self._quoted_col('event_id')} {self._id_type()} PRIMARY KEY",
-                f"{self._quoted_col('event_type')} {self._indexed_text_type()} NOT NULL",
-                f"{self._quoted_col('task_id')} {self._id_type()}",
-                f"{self._quoted_col('task_name')} {self._indexed_text_type()}",
-                f"{self._quoted_col('queue')} {self._indexed_text_type()}",
-                f"{self._quoted_col('worker_id')} {self._indexed_text_type()}",
-                f"{self._quoted_col('execution_backend')} {self._indexed_text_type()}",
-                f"{self._quoted_col('execution_profile')} {self._indexed_text_type()}",
-                f"{self._quoted_col('actor_type')} {self._indexed_text_type()}",
-                f"{self._quoted_col('actor_id')} {self._indexed_text_type()}",
-                f"{self._quoted_col('stage')} {self._indexed_text_type()}",
-                f"{self._quoted_col('level')} {self._indexed_text_type()}",
-                f"{self._quoted_col('message')} {self._text_type()}",
-                f"{self._quoted_col('detail')} {self._json_type()} NOT NULL",
-                f"{self._quoted_col('progress_current')} {self._float_type()}",
-                f"{self._quoted_col('progress_total')} {self._float_type()}",
-                f"{self._quoted_col('progress_percent')} {self._float_type()}",
-                f"{self._quoted_col('duration_ms')} {self._float_type()}",
-                f"{self._quoted_col('sequence')} {self._integer_type()}",
-                f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
-                f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
-                f"{self._quoted_col('scope')} {self._indexed_text_type()}",
-                f"{self._quoted_col('scope_key')} {self._indexed_text_type()}",
-                f"{self._quoted_col('actor')} {self._indexed_text_type()}",
-                f"{self._quoted_col('entity')} {self._indexed_text_type()}",
-                *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
-            ]
-            column_sql = ",\n  ".join(cols)
+    def _event_index_definitions(self) -> "tuple[tuple[str, tuple[str, ...]], ...]":
+        """Return canonical ``(suffix, columns)`` index definitions for event history."""
+        return (
+            ("task_id", ("task_id", "sequence", "occurred_at")),
+            ("task_name", ("task_name", "stage", "occurred_at")),
+            ("actor_id", ("actor_id", "occurred_at")),
+            ("occurred_at", ("occurred_at",)),
+            ("scope_key", ("scope_key", "occurred_at")),
+            ("entity", ("entity", "occurred_at")),
+            *((column.name, (column.name, "occurred_at")) for column in self._extra_columns if column.indexed),
+        )
+
+    def _raw_event_column_definitions(self) -> "list[str]":
+        return [
+            f"{self._quoted_col('event_id')} {self._id_type()} PRIMARY KEY",
+            f"{self._quoted_col('event_type')} {self._indexed_text_type()} NOT NULL",
+            f"{self._quoted_col('task_id')} {self._id_type()}",
+            f"{self._quoted_col('task_name')} {self._indexed_text_type()}",
+            f"{self._quoted_col('queue')} {self._indexed_text_type()}",
+            f"{self._quoted_col('worker_id')} {self._indexed_text_type()}",
+            f"{self._quoted_col('execution_backend')} {self._indexed_text_type()}",
+            f"{self._quoted_col('execution_profile')} {self._indexed_text_type()}",
+            f"{self._quoted_col('actor_type')} {self._indexed_text_type()}",
+            f"{self._quoted_col('actor_id')} {self._indexed_text_type()}",
+            f"{self._quoted_col('stage')} {self._indexed_text_type()}",
+            f"{self._quoted_col('level')} {self._indexed_text_type()}",
+            f"{self._quoted_col('message')} {self._text_type()}",
+            f"{self._quoted_col('detail')} {self._json_type()} NOT NULL",
+            f"{self._quoted_col('progress_current')} {self._float_type()}",
+            f"{self._quoted_col('progress_total')} {self._float_type()}",
+            f"{self._quoted_col('progress_percent')} {self._float_type()}",
+            f"{self._quoted_col('duration_ms')} {self._float_type()}",
+            f"{self._quoted_col('sequence')} {self._integer_type()}",
+            f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
+            f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
+            f"{self._quoted_col('scope')} {self._indexed_text_type()}",
+            f"{self._quoted_col('scope_key')} {self._indexed_text_type()}",
+            f"{self._quoted_col('actor')} {self._indexed_text_type()}",
+            f"{self._quoted_col('entity')} {self._indexed_text_type()}",
+            *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
+        ]
+
+    def _create_event_table_sql(self, *, include_indexes: "bool" = True) -> "str":
+        dialect = self._event_dialect_name()
+        if dialect == "mssql":
+            column_sql = ",\n  ".join(self._raw_event_column_definitions())
             return f"""
             IF OBJECT_ID(N'{self.table_name}', N'U') IS NULL
             BEGIN
@@ -376,36 +459,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 )
             END
             """
-        if self._event_dialect_name() == "oracle":
-            cols = [
-                f"{self._quoted_col('event_id')} {self._id_type()} PRIMARY KEY",
-                f"{self._quoted_col('event_type')} {self._indexed_text_type()} NOT NULL",
-                f"{self._quoted_col('task_id')} {self._id_type()}",
-                f"{self._quoted_col('task_name')} {self._indexed_text_type()}",
-                f"{self._quoted_col('queue')} {self._indexed_text_type()}",
-                f"{self._quoted_col('worker_id')} {self._indexed_text_type()}",
-                f"{self._quoted_col('execution_backend')} {self._indexed_text_type()}",
-                f"{self._quoted_col('execution_profile')} {self._indexed_text_type()}",
-                f"{self._quoted_col('actor_type')} {self._indexed_text_type()}",
-                f"{self._quoted_col('actor_id')} {self._indexed_text_type()}",
-                f"{self._quoted_col('stage')} {self._indexed_text_type()}",
-                f"{self._quoted_col('level')} {self._indexed_text_type()}",
-                f"{self._quoted_col('message')} {self._text_type()}",
-                f"{self._quoted_col('detail')} {self._json_type()} NOT NULL",
-                f"{self._quoted_col('progress_current')} {self._float_type()}",
-                f"{self._quoted_col('progress_total')} {self._float_type()}",
-                f"{self._quoted_col('progress_percent')} {self._float_type()}",
-                f"{self._quoted_col('duration_ms')} {self._float_type()}",
-                f"{self._quoted_col('sequence')} {self._integer_type()}",
-                f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
-                f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
-                f"{self._quoted_col('scope')} {self._indexed_text_type()}",
-                f"{self._quoted_col('scope_key')} {self._indexed_text_type()}",
-                f"{self._quoted_col('actor')} {self._indexed_text_type()}",
-                f"{self._quoted_col('entity')} {self._indexed_text_type()}",
-                *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
-            ]
-            column_sql = ",\n  ".join(cols)
+        if dialect == "oracle":
+            column_sql = ",\n  ".join(self._raw_event_column_definitions())
             return f"""
             BEGIN
                 EXECUTE IMMEDIATE 'CREATE TABLE {self._quoted_table_name()} (
@@ -418,47 +473,14 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                     END IF;
             END;
             """
-        if self._event_dialect_name() == "mysql":
-            cols = [
-                f"{self._quoted_col('event_id')} {self._id_type()} PRIMARY KEY",
-                f"{self._quoted_col('event_type')} {self._indexed_text_type()} NOT NULL",
-                f"{self._quoted_col('task_id')} {self._id_type()}",
-                f"{self._quoted_col('task_name')} {self._indexed_text_type()}",
-                f"{self._quoted_col('queue')} {self._indexed_text_type()}",
-                f"{self._quoted_col('worker_id')} {self._indexed_text_type()}",
-                f"{self._quoted_col('execution_backend')} {self._indexed_text_type()}",
-                f"{self._quoted_col('execution_profile')} {self._indexed_text_type()}",
-                f"{self._quoted_col('actor_type')} {self._indexed_text_type()}",
-                f"{self._quoted_col('actor_id')} {self._indexed_text_type()}",
-                f"{self._quoted_col('stage')} {self._indexed_text_type()}",
-                f"{self._quoted_col('level')} {self._indexed_text_type()}",
-                f"{self._quoted_col('message')} {self._text_type()}",
-                f"{self._quoted_col('detail')} {self._json_type()} NOT NULL",
-                f"{self._quoted_col('progress_current')} {self._float_type()}",
-                f"{self._quoted_col('progress_total')} {self._float_type()}",
-                f"{self._quoted_col('progress_percent')} {self._float_type()}",
-                f"{self._quoted_col('duration_ms')} {self._float_type()}",
-                f"{self._quoted_col('sequence')} {self._integer_type()}",
-                f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
-                f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
-                f"{self._quoted_col('scope')} {self._indexed_text_type()}",
-                f"{self._quoted_col('scope_key')} {self._indexed_text_type()}",
-                f"{self._quoted_col('actor')} {self._indexed_text_type()}",
-                f"{self._quoted_col('entity')} {self._indexed_text_type()}",
-                *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
-                f"INDEX {self._quoted_index_name('task_id')} ({self._quoted_col('task_id')}, {self._quoted_col('sequence')}, {self._quoted_col('occurred_at')})",
-                f"INDEX {self._quoted_index_name('task_name')} ({self._quoted_col('task_name')}, {self._quoted_col('stage')}, {self._quoted_col('occurred_at')})",
-                f"INDEX {self._quoted_index_name('actor_id')} ({self._quoted_col('actor_id')}, {self._quoted_col('occurred_at')})",
-                f"INDEX {self._quoted_index_name('occurred_at')} ({self._quoted_col('occurred_at')})",
-                f"INDEX {self._quoted_index_name('scope_key')} ({self._quoted_col('scope_key')}, {self._quoted_col('occurred_at')})",
-                f"INDEX {self._quoted_index_name('entity')} ({self._quoted_col('entity')}, {self._quoted_col('occurred_at')})",
-                *(
-                    f"INDEX {self._quoted_index_name(column.name)} ({self._quoted_col(column.name)}, {self._quoted_col('occurred_at')})"
-                    for column in self._extra_columns
-                    if column.indexed
-                ),
-            ]
-            column_sql = ",\n  ".join(cols)
+        if dialect == "mysql":
+            entries = self._raw_event_column_definitions()
+            if include_indexes:
+                entries.extend(
+                    f"INDEX {self._quoted_index_name(suffix)} ({', '.join(self._quoted_col(col) for col in cols)})"
+                    for suffix, cols in self._event_index_definitions()
+                )
+            column_sql = ",\n  ".join(entries)
             return f"CREATE TABLE IF NOT EXISTS {self._quoted_table_name()} (\n  {column_sql}\n)"
 
         rendered = self._to_sql(self._create_event_table_statement())
@@ -468,125 +490,18 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
             rendered = rendered.replace(unsplit_target, split_target, 1)
         return rendered
 
-    def _create_event_index_statements(self) -> "list[str]":
-        if self._event_dialect_name() == "mysql":
-            return []
-        if self._event_dialect_name() == "mssql":
-
-            def _mssql_idx(name: "str", cols: "str") -> "str":
-                return (
-                    "IF NOT EXISTS (SELECT 1 FROM sys.indexes "  # noqa: S608
-                    f"WHERE name = N'{self._index_name(name)}' AND object_id = OBJECT_ID(N'{self.table_name}')) "
-                    f"CREATE INDEX {self._quoted_index_name(name)} ON {self._quoted_table_name()} ({cols});"
-                )
-
-            return [
-                _mssql_idx(
-                    "task_id",
-                    f"{self._quoted_col('task_id')}, {self._quoted_col('sequence')}, {self._quoted_col('occurred_at')}",
-                ),
-                _mssql_idx(
-                    "task_name",
-                    f"{self._quoted_col('task_name')}, {self._quoted_col('stage')}, {self._quoted_col('occurred_at')}",
-                ),
-                _mssql_idx("actor_id", f"{self._quoted_col('actor_id')}, {self._quoted_col('occurred_at')}"),
-                _mssql_idx("occurred_at", f"{self._quoted_col('occurred_at')}"),
-                _mssql_idx("scope_key", f"{self._quoted_col('scope_key')}, {self._quoted_col('occurred_at')}"),
-                _mssql_idx("entity", f"{self._quoted_col('entity')}, {self._quoted_col('occurred_at')}"),
-                *(
-                    _mssql_idx(column.name, f"{self._quoted_col(column.name)}, {self._quoted_col('occurred_at')}")
-                    for column in self._extra_columns
-                    if column.indexed
-                ),
-            ]
-        if self._event_dialect_name() == "oracle":
-
-            def _oracle_idx(name: "str", cols: "str") -> "str":
-                return f"""
-                BEGIN
-                    EXECUTE IMMEDIATE 'CREATE INDEX {self._index_name(name)} ON {self._quoted_table_name()} ({cols})';
-                EXCEPTION
-                    WHEN OTHERS THEN
-                        IF SQLCODE != -955 AND SQLCODE != -1408 THEN
-                            RAISE;
-                        END IF;
-                END;
-                """
-
-            return [
-                _oracle_idx(
-                    "task_id",
-                    f"{self._quoted_col('task_id')}, {self._quoted_col('sequence')}, {self._quoted_col('occurred_at')}",
-                ),
-                _oracle_idx(
-                    "task_name",
-                    f"{self._quoted_col('task_name')}, {self._quoted_col('stage')}, {self._quoted_col('occurred_at')}",
-                ),
-                _oracle_idx("actor_id", f"{self._quoted_col('actor_id')}, {self._quoted_col('occurred_at')}"),
-                _oracle_idx("occurred_at", self._quoted_col("occurred_at")),
-                _oracle_idx("scope_key", f"{self._quoted_col('scope_key')}, {self._quoted_col('occurred_at')}"),
-                _oracle_idx("entity", f"{self._quoted_col('entity')}, {self._quoted_col('occurred_at')}"),
-                *(
-                    _oracle_idx(column.name, f"{self._quoted_col(column.name)}, {self._quoted_col('occurred_at')}")
-                    for column in self._extra_columns
-                    if column.indexed
-                ),
-            ]
-        return [
-            self._to_sql(
-                sql
-                .create_index(self._index_name("task_id"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns("task_id", "sequence", "occurred_at")
-            ),
-            self._to_sql(
-                sql
-                .create_index(self._index_name("task_name"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns("task_name", "stage", "occurred_at")
-            ),
-            self._to_sql(
-                sql
-                .create_index(self._index_name("actor_id"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns("actor_id", "occurred_at")
-            ),
-            self._to_sql(
-                sql
-                .create_index(self._index_name("occurred_at"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns("occurred_at")
-            ),
-            self._to_sql(
-                sql
-                .create_index(self._index_name("scope_key"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns("scope_key", "occurred_at")
-            ),
-            self._to_sql(
-                sql
-                .create_index(self._index_name("entity"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns("entity", "occurred_at")
-            ),
-            *(
-                self._to_sql(
-                    sql
-                    .create_index(self._index_name(column.name))
-                    .if_not_exists()
-                    .on_table(self.table_name)
-                    .columns(column.name, "occurred_at")
-                )
-                for column in self._extra_columns
-                if column.indexed
-            ),
-        ]
+    def _oracle_create_index_sql(self, suffix: "str", columns: "tuple[str, ...]") -> "str":
+        cols_sql = ", ".join(self._quoted_col(col) for col in columns)
+        return f"""
+        BEGIN
+            EXECUTE IMMEDIATE 'CREATE INDEX {self._index_name(suffix)} ON {self._quoted_table_name()} ({cols_sql})';
+        EXCEPTION
+            WHEN OTHERS THEN
+                IF SQLCODE != -955 AND SQLCODE != -1408 THEN
+                    RAISE;
+                END IF;
+        END;
+        """
 
     def _float_type(self) -> "str":
         return self._dialect_type("float", fallback="REAL")
@@ -602,10 +517,10 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
 
     auto_native_json_columns = frozenset({"detail"})
 
-    def create_statements(self) -> "list[str]":
-        """Return Spanner-compatible event-log table and index statements."""
+    def create_table_statement(self) -> "str":
+        """Return the Spanner event-log ``CREATE TABLE`` statement."""
         if not self._manage_schema:
-            return []
+            return ""
         columns = (
             f"{self._quote_identifier('event_id')} {self._id_type()} NOT NULL",
             f"{self._quote_identifier('event_type')} {self._indexed_text_type()} NOT NULL",
@@ -635,44 +550,31 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
             *(f"{self._quote_identifier(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
         )
         column_sql = ",\n  ".join(columns)
-        return [
+        return (
+            f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) "
+            f"PRIMARY KEY ({self._quote_identifier('event_id')})"
+        )
+
+    def companion_indexes(self) -> "tuple[tuple[str, str], ...]":
+        """Return ``(index_name, create_sql)`` tuples for Spanner event-log indexes."""
+        if not self._manage_schema:
+            return ()
+        return tuple(
             (
-                f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) "
-                f"PRIMARY KEY ({self._quote_identifier('event_id')})"
-            ),
-            (
-                f"CREATE INDEX {self._quoted_index_name('task_id')} ON {self._quoted_table_name()} "
-                f"({self._quote_identifier('task_id')}, {self._quote_identifier('sequence')}, "
-                f"{self._quote_identifier('occurred_at')})"
-            ),
-            (
-                f"CREATE INDEX {self._quoted_index_name('task_name')} ON {self._quoted_table_name()} "
-                f"({self._quote_identifier('task_name')}, {self._quote_identifier('stage')}, "
-                f"{self._quote_identifier('occurred_at')})"
-            ),
-            (
-                f"CREATE INDEX {self._quoted_index_name('actor_id')} ON {self._quoted_table_name()} "
-                f"({self._quote_identifier('actor_id')}, {self._quote_identifier('occurred_at')})"
-            ),
-            (
-                f"CREATE INDEX {self._quoted_index_name('occurred_at')} ON {self._quoted_table_name()} "
-                f"({self._quote_identifier('occurred_at')})"
-            ),
-            (
-                f"CREATE INDEX {self._quoted_index_name('scope_key')} ON {self._quoted_table_name()} "
-                f"({self._quote_identifier('scope_key')}, {self._quote_identifier('occurred_at')})"
-            ),
-            (
-                f"CREATE INDEX {self._quoted_index_name('entity')} ON {self._quoted_table_name()} "
-                f"({self._quote_identifier('entity')}, {self._quote_identifier('occurred_at')})"
-            ),
-            *(
-                f"CREATE INDEX {self._quoted_index_name(column.name)} ON {self._quoted_table_name()} "
-                f"({self._quote_identifier(column.name)}, {self._quote_identifier('occurred_at')})"
-                for column in self._extra_columns
-                if column.indexed
-            ),
-        ]
+                self._index_name(suffix),
+                (
+                    f"CREATE INDEX {self._quoted_index_name(suffix)} ON {self._quoted_table_name()} "
+                    f"({', '.join(self._quote_identifier(col) for col in cols)})"
+                ),
+            )
+            for suffix, cols in self._event_index_definitions()
+        )
+
+    def create_statements(self) -> "list[str]":
+        """Return Spanner-compatible event-log table and index statements."""
+        if not self._manage_schema:
+            return []
+        return [self.create_table_statement(), *(stmt for _, stmt in self.companion_indexes())]
 
     def drop_statements(self) -> "list[str]":
         """Return Spanner-compatible event-log DROP statements."""
