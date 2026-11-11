@@ -1,11 +1,12 @@
 """Schema reconciliation and teardown entrypoint for Litestar Queues SQLSpec tables."""
 
 from collections.abc import Mapping
+from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlspec.exceptions import MigrationError, SQLSpecError
-from sqlspec.migrations.schema import SchemaTarget, ensure_schema_async, ensure_schema_sync
-from sqlspec.migrations.utils import validate_builtin_reconcile_adapter
+from sqlspec.migrations.schema import SchemaTarget, ensure_schema_async, ensure_schema_sync, metadata_has_index
+from sqlspec.migrations.utils import resolve_default_schema, validate_builtin_reconcile_adapter
 
 from litestar_queues.backends.sqlspec.event_log import create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 __all__ = ("down", "downgrade", "reconcile", "reconcile_stores_async", "reconcile_stores_sync")
 
 _UNSUPPORTED_RECONCILE_ADAPTERS = frozenset({"spanner", "db2"})
+_COCKROACH_ADAPTERS = frozenset({"cockroach_asyncpg", "cockroach_psycopg"})
 
 
 def reconcile_stores_sync(
@@ -35,8 +37,9 @@ def reconcile_stores_sync(
     Why:
         Sharing this loop between ``reconcile(context)`` and backend schema
         initialization keeps driver-bound capability preparation, empty-DDL
-        skipping for unmanaged stores, and strict additive ``ensure_schema_sync``
-        options consistent in one place without committing runner transactions.
+        skipping for unmanaged stores, strict additive ``ensure_schema_sync``,
+        catalog-checked companion index repair, and store storage-option
+        delegation consistent in one place without committing runner transactions.
     """
     if validate_adapter:
         _validate_reconcile_adapter(config)
@@ -47,6 +50,10 @@ def reconcile_stores_sync(
             continue
         target = SchemaTarget.from_ddl(store.table_name, ddl, dialect=store.sqlglot_dialect())
         ensure_schema_sync(driver, (target,), manage_schema=True, create_schema=True, commit=False, strict=True)
+        _reconcile_companion_indexes_sync(driver, config, store, target)
+        reconcile_options = getattr(store, "reconcile_storage_options_sync", None)
+        if callable(reconcile_options):
+            reconcile_options(driver)
 
 
 async def reconcile_stores_async(
@@ -56,8 +63,8 @@ async def reconcile_stores_async(
 
     Why:
         Mirrors ``reconcile_stores_sync`` for coroutine drivers so async dialect
-        capability checks (such as Oracle version inspection) resolve on the
-        active runner driver before ``SchemaTarget.from_ddl`` parses the DDL.
+        capability checks, companion index repair, and store storage-option
+        convergence run on the active runner driver without committing.
     """
     if validate_adapter:
         _validate_reconcile_adapter(config)
@@ -68,6 +75,12 @@ async def reconcile_stores_async(
             continue
         target = SchemaTarget.from_ddl(store.table_name, ddl, dialect=store.sqlglot_dialect())
         await ensure_schema_async(driver, (target,), manage_schema=True, create_schema=True, commit=False, strict=True)
+        await _reconcile_companion_indexes_async(driver, config, store, target)
+        reconcile_options = getattr(store, "reconcile_storage_options_async", None)
+        if callable(reconcile_options):
+            result = reconcile_options(driver)
+            if isawaitable(result):
+                await result
 
 
 def reconcile(context: "MigrationContext") -> "Awaitable[None] | None":
@@ -215,6 +228,95 @@ def _build_extra_columns(declared: "Any") -> "tuple[EventHistoryExtraColumn, ...
 
 def _is_async_driver(context: "MigrationContext") -> "bool":
     return bool(getattr(context, "is_async_driver", False))
+
+
+def _is_cockroach_target(driver: "Any", config: "Any", store: "SQLSpecQueueStore") -> "bool":
+    if getattr(store, "data_dictionary_dialect", None) == "cockroachdb":
+        return True
+    if getattr(getattr(driver, "data_dictionary", None), "dialect", None) == "cockroachdb":
+        return True
+    effective_config = config if config is not None else getattr(store, "_config", None)
+    return effective_config is not None and _adapter_name(effective_config) in _COCKROACH_ADAPTERS
+
+
+def _resolve_index_query_schema(
+    driver: "Any", config: "Any", store: "SQLSpecQueueStore", target: "SchemaTarget"
+) -> "str | None":
+    if target.schema is not None:
+        return target.schema
+    if not _is_cockroach_target(driver, config, store):
+        return None
+    effective_config = config if config is not None else getattr(store, "_config", None)
+    default_schema = resolve_default_schema(getattr(effective_config, "migration_config", None))
+    if default_schema is not None:
+        return default_schema
+    resolve_schema = getattr(getattr(driver, "data_dictionary", None), "resolve_schema", None)
+    if callable(resolve_schema):
+        resolved = resolve_schema(None)
+        if isinstance(resolved, str) and resolved:
+            return resolved
+    return "public"
+
+
+def _missing_companion_indexes(
+    companions: "Sequence[tuple[str, str]]", rows: "Sequence[Any]", target: "SchemaTarget"
+) -> "list[tuple[str, str]]":
+    return [
+        (index_name, ddl)
+        for index_name, ddl in companions
+        if not metadata_has_index(rows, target.table_name, index_name, schema_name=target.schema)
+    ]
+
+
+def _raise_unresolved_indexes(
+    missing: "Sequence[tuple[str, str]]", after_rows: "Sequence[Any]", target: "SchemaTarget"
+) -> "None":
+    unresolved = [
+        index_name
+        for index_name, _ddl in missing
+        if not metadata_has_index(after_rows, target.table_name, index_name, schema_name=target.schema)
+    ]
+    if unresolved:
+        joined = ", ".join(unresolved)
+        msg = (
+            f"Companion index reconciliation failed for table {target.table_name!r} "
+            f"(schema={target.schema!r}): unresolved index(es) {joined}."
+        )
+        raise MigrationError(msg)
+
+
+def _reconcile_companion_indexes_sync(
+    driver: "Any", config: "Any", store: "SQLSpecQueueStore", target: "SchemaTarget"
+) -> "None":
+    companions = store.companion_indexes()
+    if not companions:
+        return
+    query_schema = _resolve_index_query_schema(driver, config, store, target)
+    rows = driver.data_dictionary.get_indexes(driver, table=target.table_name, schema=query_schema)
+    missing = _missing_companion_indexes(companions, rows, target)
+    if not missing:
+        return
+    for _index_name, ddl in missing:
+        driver.execute_script(ddl)
+    after_rows = driver.data_dictionary.get_indexes(driver, table=target.table_name, schema=query_schema)
+    _raise_unresolved_indexes(missing, after_rows, target)
+
+
+async def _reconcile_companion_indexes_async(
+    driver: "Any", config: "Any", store: "SQLSpecQueueStore", target: "SchemaTarget"
+) -> "None":
+    companions = store.companion_indexes()
+    if not companions:
+        return
+    query_schema = _resolve_index_query_schema(driver, config, store, target)
+    rows = await driver.data_dictionary.get_indexes(driver, table=target.table_name, schema=query_schema)
+    missing = _missing_companion_indexes(companions, rows, target)
+    if not missing:
+        return
+    for _index_name, ddl in missing:
+        await driver.execute_script(ddl)
+    after_rows = await driver.data_dictionary.get_indexes(driver, table=target.table_name, schema=query_schema)
+    _raise_unresolved_indexes(missing, after_rows, target)
 
 
 def _downgrade_sync(driver: "Any", stores: "Sequence[SQLSpecQueueStore]") -> "None":

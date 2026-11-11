@@ -36,6 +36,12 @@ from litestar_queues.backends.sqlspec.schema import (
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 from tests.integration._names import table_name_for_test
 
+_AiosqliteConfig: Any
+try:
+    from sqlspec.adapters.aiosqlite import AiosqliteConfig as _AiosqliteConfig
+except ImportError:  # pragma: no cover
+    _AiosqliteConfig = None
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -755,5 +761,108 @@ async def test_reconcile_adds_missing_nullable_column_and_honors_context_extensi
             assert maintenance_table_name_for("custom_ctx_queue") in tables
             assert task_reservation_table_name_for("custom_ctx_queue") in tables
             assert "base_queue" not in tables
+    finally:
+        await manager.close_all_pools()
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize(
+    ("table_name", "dropped_index"),
+    [("queue_task", "ix_queue_task_pending"), ("queue_task_event_history", "ix_queue_task_event_history_occurred_at")],
+)
+async def test_reconcile_repairs_dropped_sqlite_companion_index(
+    tmp_path: "Path", is_async: "bool", table_name: "str", dropped_index: "str"
+) -> "None":
+    if is_async:
+        pytest.importorskip("aiosqlite")
+    db_path = tmp_path / "companion_repair.db"
+    config_cls: Any = _AiosqliteConfig if is_async else SqliteConfig
+    config = config_cls(
+        connection_config={"database": str(db_path)},
+        extension_config={QUEUE_EXTENSION_NAME: {"event_history_enabled": True}},
+    )
+    manager = SQLSpec()
+
+    try:
+        if is_async:
+            async with manager.provide_session(config) as driver:
+                context = MigrationContext.from_config(config)
+                context.driver = driver
+                awaitable = reconcile(context)
+                assert awaitable is not None
+                await awaitable
+                await driver.commit()
+        else:
+            with manager.provide_session(config) as driver:
+                context = MigrationContext.from_config(config)
+                context.driver = driver
+                assert reconcile(context) is None
+                driver.commit()
+
+        with contextlib.closing(sqlite3.connect(db_path)) as connection:
+            indexes_before = {
+                (row[0], row[1])
+                for row in connection.execute(
+                    "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index'"
+                ).fetchall()
+            }
+            assert (dropped_index, table_name) in indexes_before
+            connection.execute(f'DROP INDEX "{dropped_index}"')
+            connection.commit()
+            indexes_dropped = {
+                row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+            }
+            assert dropped_index not in indexes_dropped
+
+        if is_async:
+            async with manager.provide_session(config) as driver:
+                context = MigrationContext.from_config(config)
+                context.driver = driver
+                awaitable = reconcile(context)
+                assert awaitable is not None
+                await awaitable
+                await driver.commit()
+        else:
+            with manager.provide_session(config) as driver:
+                context = MigrationContext.from_config(config)
+                context.driver = driver
+                assert reconcile(context) is None
+                driver.commit()
+
+        with contextlib.closing(sqlite3.connect(db_path)) as connection:
+            indexes_after = {
+                (row[0], row[1])
+                for row in connection.execute(
+                    "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index'"
+                ).fetchall()
+            }
+            assert (dropped_index, table_name) in indexes_after
+    finally:
+        await manager.close_all_pools()
+
+
+@pytest.mark.parametrize("precreate_queue_table", [False, True])
+async def test_reconcile_raises_migration_error_on_foreign_table_index_collision(
+    tmp_path: "Path", precreate_queue_table: "bool"
+) -> "None":
+    db_path = tmp_path / "collision.db"
+    config = SqliteConfig(connection_config={"database": str(db_path)})
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        if precreate_queue_table:
+            connection.executescript(create_queue_store(config).create_table_statement())
+        connection.execute("CREATE TABLE other_table (x TEXT)")
+        connection.execute("CREATE INDEX ix_queue_task_pending ON other_table (x)")
+        connection.commit()
+
+    manager = SQLSpec()
+    try:
+        with manager.provide_session(config) as driver:
+            context = MigrationContext.from_config(config)
+            context.driver = driver
+            with pytest.raises(MigrationError) as caught:
+                reconcile(context)
+            assert "ix_queue_task_pending" in str(caught.value)
+            assert "queue_task" in str(caught.value)
+            driver.rollback()
     finally:
         await manager.close_all_pools()

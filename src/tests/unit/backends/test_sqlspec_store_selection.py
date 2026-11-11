@@ -6,6 +6,7 @@ what a given adapter does.
 """
 
 import importlib
+import re
 import sys
 import types
 from datetime import UTC
@@ -13,24 +14,35 @@ from typing import Any, ClassVar, cast
 from unittest.mock import MagicMock
 
 import pytest
+from sqlspec.adapters.asyncpg import AsyncpgConfig
 from sqlspec.adapters.asyncpg.events.store import AsyncpgEventQueueStore
+from sqlspec.adapters.cockroach_asyncpg import CockroachAsyncpgConfig
 from sqlspec.exceptions import MigrationError
 from sqlspec.migrations.schema import SchemaTarget
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.backend import _adapter_wakeup_transport, _events_queue_store, _match_store_class
+from litestar_queues.backends.sqlspec.event_log import SQLSpecQueueEventLogStore
+from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.migrations.reconcile import (
     downgrade,
     reconcile,
     reconcile_stores_async,
     reconcile_stores_sync,
 )
+from litestar_queues.backends.sqlspec.schema import event_history_table_name_for, maintenance_table_name_for
 from litestar_queues.backends.sqlspec.stores._dialects import MySQLQueueStore, PostgresQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 from litestar_queues.backends.sqlspec.stores.factory import _adapter_store_type, create_queue_store
 from litestar_queues.config import QueueConfig
 from litestar_queues.exceptions import QueueConfigurationError
+
+_CockroachPsycopgSyncConfig: Any
+try:
+    from sqlspec.adapters.cockroach_psycopg import CockroachPsycopgSyncConfig as _CockroachPsycopgSyncConfig
+except ImportError:  # pragma: no cover
+    _CockroachPsycopgSyncConfig = None
 
 _ADAPTER_BEHAVIOR = {
     "aiomysql": ("mysql", "backtick", False, "JSON"),
@@ -1003,22 +1015,20 @@ def test_reconcile_honors_explicit_third_party_queue_store_class() -> "None":
         statement_config: "Any" = types.SimpleNamespace(dialect="sqlite")
         extension_config: "dict[str, Any]" = {}
 
-    executed_scripts: list[str] = []
-    driver = types.SimpleNamespace(
-        data_dictionary=types.SimpleNamespace(get_tables=lambda *_args, **_kwargs: []),
-        execute_script=executed_scripts.append,
-        commit=MagicMock(side_effect=AssertionError("commit must stay under runner control")),
-    )
+    catalog = _SpyIndexCatalog(dialect="sqlite")
+    driver = _SpySyncReconcileDriver(catalog=catalog)
     context = types.SimpleNamespace(
         config=ExternalCustomConfig(), driver=driver, is_async_driver=False, extension_config={}
     )
 
     assert reconcile(cast("Any", context)) is None
     assert call_order[:2] == ["prepare", "create_table"]
-    assert len(executed_scripts) == 3
-    assert any("queue_task" in stmt for stmt in executed_scripts)
-    assert any("queue_maintenance" in stmt for stmt in executed_scripts)
-    assert any("queue_task_reservation" in stmt for stmt in executed_scripts)
+    table_scripts = [stmt for stmt in driver.scripts if "CREATE TABLE" in stmt]
+    assert len(table_scripts) == 3
+    assert any("queue_task" in stmt for stmt in table_scripts)
+    assert any("queue_maintenance" in stmt for stmt in table_scripts)
+    assert any("queue_task_reservation" in stmt for stmt in table_scripts)
+    assert any("ix_queue_task_pending" in stmt for stmt in driver.scripts)
 
 
 @pytest.mark.anyio
@@ -1040,52 +1050,318 @@ async def test_reconcile_stores_validate_adapter_rejects_spanner(is_async: "bool
 async def test_reconcile_and_downgrade_dispatch_async_drivers() -> "None":
     """Reconcile and downgrade return awaitables when context.is_async_driver is truthy."""
     config = _fake_config("aiosqlite", is_async=True, dialect="sqlite")
-    executed_scripts: list[str] = []
+    catalog = _SpyIndexCatalog(dialect="sqlite")
+    driver = _SpyAsyncReconcileDriver(catalog=catalog)
+    context = types.SimpleNamespace(config=config, driver=driver, is_async_driver=True, extension_config={})
 
-    async def get_tables(*_args: "Any", **_kwargs: "Any") -> "list[Any]":
+    awaitable = reconcile(cast("Any", context))
+    assert awaitable is not None
+    await awaitable
+    table_scripts = [stmt for stmt in driver.scripts if "CREATE TABLE" in stmt]
+    assert len(table_scripts) == 3
+    assert any("ix_queue_task_pending" in stmt for stmt in driver.scripts)
+
+    driver.scripts.clear()
+    down_awaitable = downgrade(cast("Any", context))
+    assert down_awaitable is not None
+    await down_awaitable
+    assert any("queue_task_reservation" in stmt for stmt in driver.scripts)
+    assert any("queue_maintenance" in stmt for stmt in driver.scripts)
+    assert any("queue_task" in stmt for stmt in driver.scripts)
+
+
+def test_reconcile_passes_schema_qualified_table_name_to_schema_target() -> "None":
+    """Schema-qualified queue_table_name values preserve schema and unqualified table identity."""
+    config = _fake_config("sqlite", is_async=False, dialect="sqlite")
+    catalog = _SpyIndexCatalog(dialect="sqlite")
+    driver = _SpySyncReconcileDriver(catalog=catalog)
+    context = types.SimpleNamespace(
+        config=config, driver=driver, is_async_driver=False, extension_config={"queue_table_name": "app.queue_task"}
+    )
+
+    assert reconcile(cast("Any", context)) is None
+    assert catalog.table_queries == ["app", "app", "app"]
+    assert catalog.index_queries == [("queue_task", "app"), ("queue_task", "app")]
+    assert any('"app"."queue_task"' in stmt for stmt in driver.scripts)
+    assert any('"app"."queue_maintenance"' in stmt for stmt in driver.scripts)
+    assert any('"app"."queue_task_reservation"' in stmt for stmt in driver.scripts)
+
+
+_CREATE_INDEX_RE = re.compile(
+    r'CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([^"\s(]+)"?\s+ON\s+'
+    r'(?:"?([^".\s]+)"?\.)?"?([^"\s(]+)"?',
+    re.IGNORECASE,
+)
+
+
+class _SpyIndexCatalog:
+    def __init__(
+        self,
+        *,
+        dialect: "str | None" = None,
+        default_schema: "str | None" = None,
+        initial_rows: "list[dict[str, Any]] | None" = None,
+    ) -> "None":
+        self.dialect = dialect
+        self._default_schema = default_schema
+        self.table_queries: "list[str | None]" = []
+        self.index_queries: "list[tuple[str | None, str | None]]" = []
+        self.rows: "list[dict[str, Any]]" = list(initial_rows or [])
+
+    def resolve_schema(self, schema: "str | None") -> "str | None":
+        return schema if schema is not None else self._default_schema
+
+    def record_script(self, script: "str") -> "None":
+        match = _CREATE_INDEX_RE.search(script)
+        if match is None:
+            return
+        index_name, schema_name, table_name = match.groups()
+        self.rows.append({
+            "index_name": index_name,
+            "table_name": table_name,
+            "schema_name": schema_name or self._default_schema,
+        })
+
+    def lookup_indexes(self, table: "str | None" = None, schema: "str | None" = None) -> "list[dict[str, Any]]":
+        self.index_queries.append((table, schema))
+        if self.dialect == "cockroachdb" and schema is None:
+            return []
+        if table is None:
+            return list(self.rows)
+        return [row for row in self.rows if row["table_name"] == table or (row.get("extra_return_for") == table)]
+
+
+class _SpySyncDataDictionary:
+    def __init__(self, catalog: "_SpyIndexCatalog") -> "None":
+        self._catalog = catalog
+        self.dialect = catalog.dialect
+
+    def resolve_schema(self, schema: "str | None") -> "str | None":
+        return self._catalog.resolve_schema(schema)
+
+    def get_tables(self, _driver: "Any", *, schema: "str | None" = None) -> "list[Any]":
+        self._catalog.table_queries.append(schema)
         return []
 
-    async def execute_script(stmt: "str") -> "None":
-        executed_scripts.append(stmt)
+    def get_indexes(
+        self, _driver: "Any", *, table: "str | None" = None, schema: "str | None" = None
+    ) -> "list[dict[str, Any]]":
+        return self._catalog.lookup_indexes(table=table, schema=schema)
 
-    driver = types.SimpleNamespace(
-        data_dictionary=types.SimpleNamespace(get_tables=get_tables), execute_script=execute_script
+
+class _SpyAsyncDataDictionary:
+    def __init__(self, catalog: "_SpyIndexCatalog") -> "None":
+        self._catalog = catalog
+        self.dialect = catalog.dialect
+
+    def resolve_schema(self, schema: "str | None") -> "str | None":
+        return self._catalog.resolve_schema(schema)
+
+    async def get_tables(self, _driver: "Any", *, schema: "str | None" = None) -> "list[Any]":
+        self._catalog.table_queries.append(schema)
+        return []
+
+    async def get_indexes(
+        self, _driver: "Any", *, table: "str | None" = None, schema: "str | None" = None
+    ) -> "list[dict[str, Any]]":
+        return self._catalog.lookup_indexes(table=table, schema=schema)
+
+
+class _SpySyncReconcileDriver:
+    def __init__(self, *, catalog: "_SpyIndexCatalog", create_statement_sql: "str | None" = None) -> "None":
+        self.catalog = catalog
+        self.data_dictionary = _SpySyncDataDictionary(catalog)
+        self.create_statement_sql = create_statement_sql
+        self.queries: "list[str]" = []
+        self.executed: "list[str]" = []
+        self.scripts: "list[str]" = []
+        self.commit = MagicMock(side_effect=AssertionError("commit must stay under runner control"))
+
+    def select_one_or_none(self, sql_text: "str") -> "Any":
+        self.queries.append(sql_text)
+        if self.create_statement_sql is None:
+            return None
+        return {"create_statement": self.create_statement_sql}
+
+    def execute(self, sql_text: "str") -> "None":
+        self.executed.append(sql_text)
+
+    def execute_script(self, sql_text: "str") -> "None":
+        self.scripts.append(sql_text)
+        self.catalog.record_script(sql_text)
+
+
+class _SpyAsyncReconcileDriver:
+    def __init__(self, *, catalog: "_SpyIndexCatalog", create_statement_sql: "str | None" = None) -> "None":
+        self.catalog = catalog
+        self.data_dictionary = _SpyAsyncDataDictionary(catalog)
+        self.create_statement_sql = create_statement_sql
+        self.queries: "list[str]" = []
+        self.executed: "list[str]" = []
+        self.scripts: "list[str]" = []
+        self.commit = MagicMock(side_effect=AssertionError("commit must stay under runner control"))
+
+    async def select_one_or_none(self, sql_text: "str") -> "Any":
+        self.queries.append(sql_text)
+        if self.create_statement_sql is None:
+            return None
+        return {"create_statement": self.create_statement_sql}
+
+    async def execute(self, sql_text: "str") -> "None":
+        self.executed.append(sql_text)
+
+    async def execute_script(self, sql_text: "str") -> "None":
+        self.scripts.append(sql_text)
+        self.catalog.record_script(sql_text)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("migration_config", "expected_schema"), [({}, "public"), ({"default_schema": "analytics"}, "analytics")]
+)
+@pytest.mark.parametrize("dictionary_dialect", ["cockroachdb", None])
+async def test_reconcile_cockroach_event_log_get_indexes_resolves_schema(
+    migration_config: "dict[str, Any]", expected_schema: "str", dictionary_dialect: "str | None"
+) -> "None":
+    """CockroachDB SQLSpecQueueEventLogStore resolves explicit schema for get_indexes and preserves schema_name=target.schema."""
+    assert SQLSpecQueueEventLogStore.data_dictionary_dialect is None
+    event_table = event_history_table_name_for("queue_task")
+    catalog = _SpyIndexCatalog(
+        dialect=dictionary_dialect,
+        default_schema=expected_schema,
+        initial_rows=[
+            {
+                "index_name": f"ix_{event_table}_occurred_at",
+                "table_name": "other_table",
+                "schema_name": expected_schema,
+                "extra_return_for": event_table,
+            }
+        ],
+    )
+    driver = _SpyAsyncReconcileDriver(catalog=catalog)
+    config = CockroachAsyncpgConfig(
+        extension_config={QUEUE_EXTENSION_NAME: {"event_history_enabled": True}}, migration_config=migration_config
     )
     context = types.SimpleNamespace(config=config, driver=driver, is_async_driver=True, extension_config={})
 
     awaitable = reconcile(cast("Any", context))
     assert awaitable is not None
     await awaitable
-    assert len(executed_scripts) == 3
 
-    executed_scripts.clear()
-    down_awaitable = downgrade(cast("Any", context))
-    assert down_awaitable is not None
-    await down_awaitable
-    assert any("queue_task_reservation" in stmt for stmt in executed_scripts)
-    assert any("queue_maintenance" in stmt for stmt in executed_scripts)
-    assert any("queue_task" in stmt for stmt in executed_scripts)
+    assert ("queue_task", expected_schema) in catalog.index_queries
+    assert (event_table, expected_schema) in catalog.index_queries
+    assert maintenance_table_name_for("queue_task") not in {tbl for tbl, _ in catalog.index_queries}
+    assert "queue_task_reservation" not in {tbl for tbl, _ in catalog.index_queries}
+    for suffix in ("task_id", "task_name", "actor_id", "occurred_at", "scope_key", "entity"):
+        assert any(f"ix_{event_table}_{suffix}" in stmt for stmt in driver.scripts)
 
 
-def test_reconcile_passes_schema_qualified_table_name_to_schema_target() -> "None":
-    """Schema-qualified queue_table_name values preserve schema and unqualified table identity."""
-    config = _fake_config("sqlite", is_async=False, dialect="sqlite")
-    queried_schemas: list[str | None] = []
-    executed_scripts: list[str] = []
+@pytest.mark.anyio
+async def test_reconcile_cockroach_event_log_detects_driver_dictionary_dialect() -> "None":
+    """driver.data_dictionary.dialect == 'cockroachdb' triggers default-schema index queries even without cockroach config name."""
+    event_table = event_history_table_name_for("queue_task")
+    catalog = _SpyIndexCatalog(dialect="cockroachdb", default_schema=None)
+    driver = _SpyAsyncReconcileDriver(catalog=catalog)
+    config = AsyncpgConfig(extension_config={QUEUE_EXTENSION_NAME: {"event_history_enabled": True}})
+    context = types.SimpleNamespace(config=config, driver=driver, is_async_driver=True, extension_config={})
 
-    def get_tables(_driver: "Any", *, schema: "str | None" = None) -> "list[Any]":
-        queried_schemas.append(schema)
-        return []
+    awaitable = reconcile(cast("Any", context))
+    assert awaitable is not None
+    await awaitable
 
-    driver = types.SimpleNamespace(
-        data_dictionary=types.SimpleNamespace(get_tables=get_tables), execute_script=executed_scripts.append
-    )
+    assert (event_table, "public") in catalog.index_queries
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("adapter", ["cockroach_asyncpg", "cockroach_psycopg"])
+@pytest.mark.parametrize(
+    ("existing_create_sql", "terminal_ttl", "expected_action"),
+    [
+        ('CREATE TABLE "queue_task" ("id" VARCHAR(64))', 3600.0, "set"),
+        (
+            (
+                'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'on\', '
+                "ttl_expiration_expression = 'CASE WHEN status IN (''completed'', ''failed'', "
+                "''cancelled'', ''expired'') AND completed_at IS NOT NULL THEN completed_at + "
+                "''01:00:00''::INTERVAL ELSE NULL END')"
+            ),
+            3600.0,
+            "noop",
+        ),
+        (
+            (
+                'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'on\', '
+                "ttl_expiration_expression = 'CASE WHEN status IN (''completed'', ''failed'', "
+                "''cancelled'', ''expired'') AND completed_at IS NOT NULL THEN completed_at + "
+                "INTERVAL ''60 seconds'' ELSE NULL END')"
+            ),
+            120.0,
+            "set",
+        ),
+        (
+            (
+                'CREATE TABLE "queue_task" ("id" VARCHAR(64)) WITH (ttl = \'on\', '
+                "ttl_expiration_expression = 'CASE WHEN status IN (''completed'', ''failed'', "
+                "''cancelled'', ''expired'') AND completed_at IS NOT NULL THEN completed_at + "
+                "''01:00:00''::INTERVAL ELSE NULL END')"
+            ),
+            None,
+            "reset",
+        ),
+    ],
+)
+async def test_reconcile_cockroach_ttl_reconcile_delegates_and_isolates_maintenance(
+    adapter: "str", existing_create_sql: "str", terminal_ttl: "float | None", expected_action: "str"
+) -> "None":
+    """reconcile() delegates TTL convergence to CockroachQueueStore and isolates queue_maintenance."""
+    if adapter == "cockroach_psycopg" and _CockroachPsycopgSyncConfig is None:
+        pytest.skip("psycopg not installed")
+    catalog = _SpyIndexCatalog(dialect="cockroachdb", default_schema="public")
+    if adapter == "cockroach_asyncpg":
+        config: Any = CockroachAsyncpgConfig()
+        driver: Any = _SpyAsyncReconcileDriver(catalog=catalog, create_statement_sql=existing_create_sql)
+        is_async = True
+    else:
+        config = _CockroachPsycopgSyncConfig()
+        driver = _SpySyncReconcileDriver(catalog=catalog, create_statement_sql=existing_create_sql)
+        is_async = False
+
     context = types.SimpleNamespace(
-        config=config, driver=driver, is_async_driver=False, extension_config={"queue_table_name": "app.queue_task"}
+        config=config, driver=driver, is_async_driver=is_async, extension_config={"terminal_ttl": terminal_ttl}
     )
+    result = reconcile(cast("Any", context))
+    if is_async:
+        assert result is not None
+        await result
+    else:
+        assert result is None
 
-    assert reconcile(cast("Any", context)) is None
-    assert queried_schemas == ["app", "app", "app"]
-    assert any('"app"."queue_task"' in stmt for stmt in executed_scripts)
-    assert any('"app"."queue_maintenance"' in stmt for stmt in executed_scripts)
-    assert any('"app"."queue_task_reservation"' in stmt for stmt in executed_scripts)
+    assert driver.queries == ['SHOW CREATE TABLE "queue_task"']
+    assert not any("queue_maintenance" in stmt for stmt in [*driver.queries, *driver.executed])
+    assert ("queue_task", "public") in catalog.index_queries
+    assert maintenance_table_name_for("queue_task") not in {tbl for tbl, _ in catalog.index_queries}
+    if expected_action == "noop":
+        assert driver.executed == []
+    elif expected_action == "reset":
+        assert driver.executed == ['ALTER TABLE "queue_task" RESET (ttl)']
+    else:
+        assert len(driver.executed) == 1
+        assert driver.executed[0].startswith("ALTER TABLE \"queue_task\" SET (ttl = 'on', ttl_expiration_expression = ")
+        assert terminal_ttl is not None
+        assert f"{int(terminal_ttl)} seconds" in driver.executed[0]
+
+
+@pytest.mark.anyio
+async def test_reconcile_postgres_delegates_autovacuum_and_isolates_maintenance() -> "None":
+    """reconcile() delegates Postgres autovacuum options to PostgresQueueStore and skips queue_maintenance."""
+    catalog = _SpyIndexCatalog(dialect="postgres", default_schema="public")
+    driver = _SpyAsyncReconcileDriver(catalog=catalog)
+    context = types.SimpleNamespace(config=AsyncpgConfig(), driver=driver, is_async_driver=True, extension_config={})
+
+    awaitable = reconcile(cast("Any", context))
+    assert awaitable is not None
+    await awaitable
+
+    assert driver.executed == [
+        'ALTER TABLE "queue_task" SET (autovacuum_vacuum_scale_factor = 0.05, autovacuum_analyze_scale_factor = 0.02)'
+    ]
