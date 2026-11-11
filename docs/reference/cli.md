@@ -15,6 +15,7 @@ litestar --app app:app queues <command> [OPTIONS]
 | [`litestar queues run-task`](#litestar-queues-run-task) | Worker & Consumer Execution | Run one queued record by id (external-executor consumer). By default reads the task id QUEUES_TASK_ID and QUEUES_CONFIG_FACTORY from the environment; the options below override those defaults so a job can be run by hand. |
 | [`litestar queues run-maintenance`](#litestar-queues-run-maintenance) | Maintenance, Status & Diagnostics | Run one bounded maintenance pass (external reconcile, stale recovery, and retention) and exit. Thresholds and limits come from QueueConfig.maintenance; this command never starts a worker or runs due work. |
 | [`litestar queues status`](#litestar-queues-status) | Maintenance, Status & Diagnostics | Show queue status counts. |
+| [`litestar queues list`](#litestar-queues-list) | Maintenance, Status & Diagnostics | List queued task records with filtering and pagination. |
 | [`litestar queues scheduler-health`](#litestar-queues-scheduler-health) | Maintenance, Status & Diagnostics | Exit non-zero if the scheduler canary task has not completed within the window. |
 
 ## Worker & Consumer Execution
@@ -71,7 +72,7 @@ litestar queues run-task [OPTIONS]
 
 ## Maintenance, Status & Diagnostics
 
-Commands for executing the 6-phase queue maintenance sweep, inspecting backend health, and checking recurring scheduler heartbeats.
+Commands for executing the 6-phase queue maintenance sweep, inspecting backend health and task listings, and checking recurring scheduler heartbeats.
 
 ### `litestar queues run-maintenance`
 
@@ -103,6 +104,26 @@ litestar queues status [OPTIONS]
 | `--queue` | `text` | `None` | Count only records in this queue. |
 | `--json` | `bool` | `False` | Emit machine-readable JSON. |
 
+### `litestar queues list`
+
+List queued task records with filtering and pagination.
+
+```bash
+litestar queues list [OPTIONS]
+```
+
+**Options**
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--status` | `Choice` | `None` | Filter by task status. Repeatable. (Choices: `pending`, `scheduled`, `running`, `completed`, `failed`, `cancelled`, `expired`) |
+| `--queue` | `text` | `None` | Filter by logical queue name. |
+| `--task-name` | `text` | `None` | Filter by registered task name. |
+| `--key` | `text` | `None` | Filter by deduplication key. |
+| `--limit` | `integer range` | `50` | Maximum records to return (default 50). |
+| `--offset` | `integer range` | `0` | Zero-based starting record offset (default 0). |
+| `--json` | `bool` | `False` | Emit machine-readable JSON. |
+
 ### `litestar queues scheduler-health`
 
 Exit non-zero if the scheduler canary task has not completed within the window.
@@ -130,3 +151,4 @@ litestar queues scheduler-health [OPTIONS]
         - run_maintenance_command
         - status_command
         - scheduler_health_command
+        - list_command
