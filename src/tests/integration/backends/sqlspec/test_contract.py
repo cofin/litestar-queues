@@ -3024,11 +3024,12 @@ def test_sqlspec_store_list_tasks_and_count_tasks_compile_across_dialects(
     assert "IS NULL" in empty_count.sql.upper()
 
 
+@pytest.mark.parametrize("suffix", ("list", "created", "heartbeat", "pending"))
 @pytest.mark.parametrize(
     ("table_name", "expected_table_sql"), (("queue_task", "[queue_task]"), ("app.queue_task", "[app].[queue_task]"))
 )
 def test_sqlspec_arrow_odbc_drop_statements_and_companion_indexes(
-    table_name: "str", expected_table_sql: "str"
+    table_name: "str", expected_table_sql: "str", suffix: "str"
 ) -> "None":
     """ArrowOdbcQueueStore creates and drops created/list indexes with T-SQL ON <table> syntax."""
     store = create_queue_store(
@@ -3044,8 +3045,7 @@ def test_sqlspec_arrow_odbc_drop_statements_and_companion_indexes(
     assert store._index_name("list") in companion
     assert store._index_name("created") in created_sql
     assert store._index_name("list") in created_sql
-    for suffix in ("list", "created", "heartbeat", "pending"):
-        assert f"DROP INDEX IF EXISTS [{store._index_name(suffix)}] ON {expected_table_sql}" in drops
+    assert f"DROP INDEX IF EXISTS [{store._index_name(suffix)}] ON {expected_table_sql}" in drops
 
     unmanaged = create_queue_store(
         _fake_adapter_config("arrow_odbc", dialect="tsql", config_type_name="ArrowOdbcConfig"),

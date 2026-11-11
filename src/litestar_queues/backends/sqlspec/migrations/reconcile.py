@@ -59,9 +59,7 @@ def reconcile_stores_sync(
         target = SchemaTarget.from_ddl(store.table_name, ddl, dialect=store.sqlglot_dialect())
         ensure_schema_sync(driver, (target,), manage_schema=True, create_schema=True, commit=False, strict=True)
         _reconcile_companion_indexes_sync(driver, config, store, target)
-        reconcile_options = getattr(store, "reconcile_storage_options_sync", None)
-        if callable(reconcile_options):
-            reconcile_options(driver)
+        _invoke_optional_sync(store, "reconcile_storage_options_sync", driver)
 
 
 async def reconcile_stores_async(
