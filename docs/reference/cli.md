@@ -72,7 +72,7 @@ litestar queues run-task [OPTIONS]
 
 ## Maintenance, Status & Diagnostics
 
-Commands for executing the 6-phase queue maintenance sweep, inspecting backend health and task listings, and checking recurring scheduler heartbeats.
+Commands for executing the queue maintenance sweep, inspecting backend health and task listings, and checking recurring scheduler heartbeats.
 
 ### `litestar queues run-maintenance`
 

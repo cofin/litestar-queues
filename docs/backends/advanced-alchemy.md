@@ -69,3 +69,4 @@ When generating Alembic migrations for custom models composed with the Advanced 
 
 1. The `dispatch_checked_at` nullable timezone-aware timestamp column and the composite `ix_<table_name>_dispatch_repair` index on `(status, execution_backend, dispatch_checked_at, scheduled_at, queued_at)` on your `QueueTaskModelMixin` table for external dispatch repair scans.
 2. The `queue_task_reservation` table (`QueueTaskReservationModelMixin`) with primary/unique `task_key`, `task_id`, `task_name`, and `reserved_at` columns when tasks use `unique_until="forever"`.
+3. The two `QueueTaskModelMixin` task-listing indexes used by `QueueService.list_tasks`: `ix_<table_name>_created` on `(created_at, id)` and `ix_<table_name>_list` on `(status, queue, created_at, id)` (with MySQL prefix lengths `status: 32` and `queue: 191`).

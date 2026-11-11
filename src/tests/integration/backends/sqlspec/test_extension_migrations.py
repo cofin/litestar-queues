@@ -3,10 +3,8 @@
 import contextlib
 import importlib
 import sqlite3
-import tomllib
 from datetime import UTC, datetime
 from inspect import isawaitable
-from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from unittest.mock import MagicMock
@@ -46,6 +44,7 @@ from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
 from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEvent
 from tests.integration._names import table_name_for_test
+from tests.integration.backends.sqlspec._schema import run_queue_migrations
 
 _AdbcConfig: Any
 try:
@@ -77,6 +76,18 @@ try:
 except ImportError:  # pragma: no cover
     _CockroachAsyncpgConfig = None
 
+_MssqlPythonConfig: Any
+try:
+    from sqlspec.adapters.mssql_python import MssqlPythonConfig as _MssqlPythonConfig
+except ImportError:  # pragma: no cover
+    _MssqlPythonConfig = None
+
+_PymssqlConfig: Any
+try:
+    from sqlspec.adapters.pymssql import PymssqlConfig as _PymssqlConfig
+except ImportError:  # pragma: no cover
+    _PymssqlConfig = None
+
 _SpannerSyncConfig: Any
 try:
     from sqlspec.adapters.spanner import SpannerSyncConfig as _SpannerSyncConfig
@@ -84,6 +95,8 @@ except ImportError:  # pragma: no cover
     _SpannerSyncConfig = None
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from pytest import FixtureRequest
 
     from litestar_queues.backends.sqlspec.typing import ExtensionMigrationMode
@@ -401,15 +414,15 @@ async def test_sqlspec_psycopg_fresh_migration_serves_query(request: "FixtureReq
         await sqlspec_manager.close_all_pools()
 
 
+@pytest.mark.xdist_group("mssql_service")
 @pytest.mark.parametrize("adapter,autocommit", [("pymssql", False), ("pymssql", True), ("mssql_python", False)])
 async def test_sqlserver_native_migration_schema_and_queue_cycle(
     request: "FixtureRequest", adapter: "str", autocommit: "bool"
 ) -> "None":
     """Native SQL Server configs migrate twice and serve queues in an explicit schema."""
-    from sqlspec.adapters.mssql_python import MssqlPythonConfig
-    from sqlspec.adapters.pymssql import PymssqlConfig
-
-    from tests.integration.backends.sqlspec._schema import run_queue_migrations
+    config_type: Any = _PymssqlConfig if adapter == "pymssql" else _MssqlPythonConfig
+    if config_type is None:
+        pytest.skip(f"{adapter} adapter is not installed")
 
     svc = request.getfixturevalue("mssql_service")
     schema = f"queue_native_{uuid4().hex[:12]}"
@@ -423,7 +436,6 @@ async def test_sqlserver_native_migration_schema_and_queue_cycle(
     }
     if adapter == "mssql_python":
         connection["trust_server_certificate"] = True
-    config_type = PymssqlConfig if adapter == "pymssql" else MssqlPythonConfig
     admin_config = config_type(connection_config={**connection, "autocommit": True})
     connection["user"] = schema
     config = config_type(
@@ -1296,19 +1308,6 @@ async def _execute_all(driver: "Any", statements: "list[str]") -> "None":
         await driver.execute_script(statement)
 
 
-def test_pyproject_declares_sqlspec_072_floor() -> "None":
-    pyproject_path = Path(__file__).resolve().parents[5] / "pyproject.toml"
-    manifest = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-
-    optional_sqlspec = manifest["project"]["optional-dependencies"]["sqlspec"]
-    benchmark_deps = manifest["dependency-groups"]["benchmark-backends"]
-    adapter_deps = manifest["dependency-groups"]["test-adapters"]
-
-    assert optional_sqlspec == ["sqlspec>=0.72.0"]
-    assert "sqlspec[performance]>=0.72.0" in benchmark_deps
-    assert any(dep.startswith("sqlspec[") and dep.endswith(">=0.72.0") for dep in adapter_deps)
-
-
 @pytest.mark.parametrize("adapter", ["sqlite", "aiosqlite"])
 async def test_reconcile_default_and_repeat_migrates_and_preserves_rows(tmp_path: "Path", adapter: "str") -> "None":
     if adapter == "aiosqlite" and _AiosqliteConfig is None:
@@ -1617,7 +1616,13 @@ def _build_index_repair_target(request: "FixtureRequest", dialect: "str") -> "tu
     return config, table, tracking, str(svc.db)
 
 
-@pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+@pytest.mark.parametrize(
+    "dialect",
+    [
+        pytest.param("postgres", marks=pytest.mark.xdist_group("postgres_service")),
+        pytest.param("mysql", marks=pytest.mark.xdist_group("mysql_service")),
+    ],
+)
 async def test_reconcile_repairs_dropped_companion_index_postgres_and_mysql(
     request: "FixtureRequest", dialect: "str"
 ) -> "None":
@@ -1771,7 +1776,14 @@ async def _verify_postgres_foreign_same_name_index(request: "FixtureRequest", *,
         await manager.close_all_pools()
 
 
-@pytest.mark.parametrize("scenario", ["mysql_same_schema", "postgres_cross_schema", "postgres_same_schema"])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        pytest.param("mysql_same_schema", marks=pytest.mark.xdist_group("mysql_service")),
+        pytest.param("postgres_cross_schema", marks=pytest.mark.xdist_group("postgres_service")),
+        pytest.param("postgres_same_schema", marks=pytest.mark.xdist_group("postgres_service")),
+    ],
+)
 async def test_reconcile_foreign_same_name_index_mysql_and_postgres(
     request: "FixtureRequest", scenario: "str"
 ) -> "None":

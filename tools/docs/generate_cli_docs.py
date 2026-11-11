@@ -27,7 +27,7 @@ COMMAND_CATEGORIES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     (
         "Maintenance, Status & Diagnostics",
-        "Commands for executing the 6-phase queue maintenance sweep, inspecting backend health and task listings, and checking recurring scheduler heartbeats.",
+        "Commands for executing the queue maintenance sweep, inspecting backend health and task listings, and checking recurring scheduler heartbeats.",
         ("run-maintenance", "status", "list", "scheduler-health"),
     ),
 )

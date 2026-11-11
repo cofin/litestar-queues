@@ -70,7 +70,7 @@ When `manage_schema=True` on [`SQLSpecBackendConfig`](../reference/backends.md#l
 
 - **`migration_mode="reconcile"` (default, `sqlspec>=0.72.0`)**: Converges `queue_task`, optional `queue_task_event_history` (including nullable `EventHistoryExtraColumn` additions), `queue_maintenance`, `queue_task_reservation`, companion indexes, CockroachDB `terminal_ttl`, and durable `sqlspec_event_queue` tables on every `upgrade("head")` without adding `ext_litestar_queues_*` rows to `ddl_migrations`. Raises `MigrationError` under `strict=True` on non-additive column drift and drops enabled queue tables in reverse order on `downgrade("base")`.
 - **`migration_mode="versioned"`**: Applies packaged revision `0001_create_queue_tasks` once and tracks `ext_litestar_queues_0001` in `ddl_migrations` when immutable migration histories are required.
-- **`manage_schema=False` (external DDL) & Google Cloud Spanner**: Set `manage_schema=False` when Liquibase, Flyway, Terraform, or DBA pipelines own DDL completely. On Google Cloud Spanner (`spanner`), schema reconciliation refuses `upgrade("head")` with `MigrationError`; apply DDL explicitly via `await backend.create_schema()` or external Spanner DDL tooling.
+- **`manage_schema=False` (external DDL) & Google Cloud Spanner**: Set `manage_schema=False` when external migration pipelines own all DDL. On Google Cloud Spanner (`spanner`), schema reconciliation refuses `upgrade("head")` with `MigrationError`; apply DDL explicitly via `await backend.create_schema()` or external Spanner DDL tooling.
 
 ## Forever-Uniqueness Reservation Storage
 

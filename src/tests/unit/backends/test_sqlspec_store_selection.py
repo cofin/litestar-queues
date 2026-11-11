@@ -1267,8 +1267,13 @@ async def test_reconcile_cockroach_event_log_get_indexes_resolves_schema(
     assert (event_table, expected_schema) in catalog.index_queries
     assert maintenance_table_name_for("queue_task") not in {tbl for tbl, _ in catalog.index_queries}
     assert "queue_task_reservation" not in {tbl for tbl, _ in catalog.index_queries}
-    for suffix in ("task_id", "task_name", "actor_id", "occurred_at", "scope_key", "entity"):
-        assert any(f"ix_{event_table}_{suffix}" in stmt for stmt in driver.scripts)
+    expected_suffixes = ("task_id", "task_name", "actor_id", "occurred_at", "scope_key", "entity")
+    missing_suffixes = {
+        suffix
+        for suffix in expected_suffixes
+        if not any(f"ix_{event_table}_{suffix}" in stmt for stmt in driver.scripts)
+    }
+    assert not missing_suffixes
 
 
 @pytest.mark.anyio
