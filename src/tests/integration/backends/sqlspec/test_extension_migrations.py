@@ -11,13 +11,34 @@ import pytest
 pytest.importorskip("sqlspec")
 
 from datetime import UTC
+from unittest.mock import MagicMock
+
+from sqlspec import SQLSpec
+from sqlspec.adapters.sqlite import SqliteConfig
+from sqlspec.exceptions import MigrationError
+from sqlspec.migrations.context import MigrationContext
 
 from litestar_queues import WorkerConfig
-from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.backends.sqlspec.schema import migration_directory
+from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
+from litestar_queues.backends.sqlspec.migrations.reconcile import (
+    down,
+    downgrade,
+    reconcile,
+    reconcile_stores_async,
+    reconcile_stores_sync,
+)
+from litestar_queues.backends.sqlspec.schema import (
+    event_history_table_name_for,
+    maintenance_table_name_for,
+    migration_directory,
+    task_reservation_table_name_for,
+)
+from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 from tests.integration._names import table_name_for_test
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from pytest import FixtureRequest
 
     from tests.integration._backends import PostgresService
@@ -532,4 +553,207 @@ async def test_sqlspec_packaged_migration_long_postgres_name_is_idempotent(
             for statement in await migration.down(context):
                 await driver.execute_script(statement)
             await driver.execute_script(f'DROP TABLE IF EXISTS "{tracking}"')
+        await manager.close_all_pools()
+
+
+@pytest.mark.parametrize(
+    ("action", "context_factory", "match"),
+    [
+        (
+            "reconcile",
+            lambda: SimpleNamespace(config=SqliteConfig(), driver=None, is_async_driver=False, extension_config={}),
+            "active database driver",
+        ),
+        (
+            "downgrade",
+            lambda: SimpleNamespace(config=None, driver=MagicMock(), is_async_driver=False, extension_config={}),
+            None,
+        ),
+        ("reconcile", lambda: None, None),
+        ("downgrade", lambda: None, None),
+    ],
+)
+async def test_reconcile_and_downgrade_validate_context(
+    action: "str", context_factory: "Any", match: "str | None"
+) -> "None":
+    target = reconcile if action == "reconcile" else downgrade
+    with pytest.raises(MigrationError, match=match):
+        target(context_factory())
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+async def test_reconcile_stores_skips_empty_ddl_without_driver_calls(is_async: "bool") -> "None":
+    config = SqliteConfig()
+    store = create_queue_store(config, manage_schema=False)
+    driver = MagicMock()
+    driver.data_dictionary.get_tables.side_effect = AssertionError("data_dictionary should not be queried")
+    driver.execute.side_effect = AssertionError("execute should not be called")
+    driver.execute_script.side_effect = AssertionError("execute_script should not be called")
+
+    if is_async:
+        await reconcile_stores_async(driver, [store], config=config)
+    else:
+        reconcile_stores_sync(driver, [store], config=config)
+
+
+async def test_reconcile_and_downgrade_sync_sqlite_with_event_history(tmp_path: "Path") -> "None":
+    db_path = tmp_path / "sync_reconcile.db"
+    config = SqliteConfig(
+        connection_config={"database": str(db_path)},
+        extension_config={
+            QUEUE_EXTENSION_NAME: {
+                "event_history_enabled": True,
+                "event_history_extra_columns": [{"name": "tenant_id", "source": "metadata.tenant_id", "indexed": True}],
+            }
+        },
+    )
+    manager = SQLSpec()
+    expected_tables = {
+        "queue_task",
+        event_history_table_name_for("queue_task"),
+        maintenance_table_name_for("queue_task"),
+        task_reservation_table_name_for("queue_task"),
+    }
+    assert down is downgrade
+
+    try:
+        with manager.provide_session(config) as driver:
+            context = MigrationContext.from_config(config)
+            context.driver = driver
+            assert reconcile(context) is None
+            driver.commit()
+
+        with contextlib.closing(sqlite3.connect(db_path)) as connection:
+            tables = {
+                row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }
+            assert expected_tables.issubset(tables)
+            assert "ddl_migrations" not in tables
+            event_columns = {
+                row[1]
+                for row in connection.execute(
+                    f"PRAGMA table_info({event_history_table_name_for('queue_task')})"
+                ).fetchall()
+            }
+            assert "tenant_id" in event_columns
+
+        with manager.provide_session(config) as driver:
+            context = MigrationContext.from_config(config)
+            context.driver = driver
+            assert downgrade(context) is None
+            driver.commit()
+
+        with contextlib.closing(sqlite3.connect(db_path)) as connection:
+            tables_after = {
+                row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }
+            assert expected_tables.isdisjoint(tables_after)
+    finally:
+        await manager.close_all_pools()
+
+
+async def test_reconcile_aiosqlite_runner_migrate_up_and_down(tmp_path: "Path") -> "None":
+    pytest.importorskip("aiosqlite")
+    from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
+    db_path = tmp_path / "async_reconcile.db"
+    config = AiosqliteConfig(connection_config={"database": str(db_path)})
+    configure_queue_migration_extension(config, event_history_enabled=True, migration_mode="reconcile")
+
+    commands = config.get_migration_commands()
+    assert QUEUE_EXTENSION_NAME in {descriptor.name for descriptor in commands.extension_reconcilers}
+
+    expected_tables = {
+        "queue_task",
+        event_history_table_name_for("queue_task"),
+        maintenance_table_name_for("queue_task"),
+        task_reservation_table_name_for("queue_task"),
+    }
+
+    await config.migrate_up(echo=False)
+    await config.migrate_up(echo=False)
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        tables = {
+            row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+        assert expected_tables.issubset(tables)
+        versions = [
+            row[0]
+            for row in connection.execute(
+                "SELECT version_num FROM ddl_migrations WHERE version_num LIKE 'ext_litestar_queues_%'"
+            ).fetchall()
+        ]
+        assert versions == []
+
+    await config.migrate_down("base", echo=False)
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        tables_after = {
+            row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+        assert expected_tables.isdisjoint(tables_after)
+
+
+@pytest.mark.parametrize(
+    "create_table_sql",
+    [
+        "CREATE TABLE queue_task (id VARCHAR(64) PRIMARY KEY)",
+        "CREATE TABLE queue_task (id VARCHAR(64) PRIMARY KEY, task_name VARCHAR(255) NOT NULL, priority TEXT NOT NULL)",
+    ],
+)
+async def test_reconcile_refuses_strict_non_additive_table_drift(tmp_path: "Path", create_table_sql: "str") -> "None":
+    db_path = tmp_path / "strict_refusal.db"
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(create_table_sql)
+        connection.commit()
+
+    config = SqliteConfig(connection_config={"database": str(db_path)})
+    manager = SQLSpec()
+    try:
+        with manager.provide_session(config) as driver:
+            context = MigrationContext.from_config(config)
+            context.driver = driver
+            with pytest.raises(MigrationError):
+                reconcile(context)
+            driver.rollback()
+
+        with contextlib.closing(sqlite3.connect(db_path)) as connection:
+            columns = [row[1] for row in connection.execute("PRAGMA table_info(queue_task)").fetchall()]
+            assert "id" in columns
+            assert "expires_at" not in columns
+    finally:
+        await manager.close_all_pools()
+
+
+async def test_reconcile_adds_missing_nullable_column_and_honors_context_extension_config(tmp_path: "Path") -> "None":
+    db_path = tmp_path / "additive_reconcile.db"
+    config = SqliteConfig(
+        connection_config={"database": str(db_path)},
+        extension_config={QUEUE_EXTENSION_NAME: {"queue_table_name": "base_queue"}},
+    )
+    initial_store = create_queue_store(config, table_name="custom_ctx_queue", manage_schema=True)
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
+        connection.executescript(initial_store._create_initial_table_sql())
+        columns_before = {row[1] for row in connection.execute("PRAGMA table_info(custom_ctx_queue)").fetchall()}
+        assert "expires_at" not in columns_before
+        connection.commit()
+
+    manager = SQLSpec()
+    try:
+        with manager.provide_session(config) as driver:
+            context = MigrationContext.from_config(config)
+            context.driver = driver
+            context.extension_config = {"queue_table_name": "custom_ctx_queue"}
+            assert reconcile(context) is None
+            driver.commit()
+
+        with contextlib.closing(sqlite3.connect(db_path)) as connection:
+            columns_after = {row[1] for row in connection.execute("PRAGMA table_info(custom_ctx_queue)").fetchall()}
+            assert "expires_at" in columns_after
+            tables = {
+                row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }
+            assert maintenance_table_name_for("custom_ctx_queue") in tables
+            assert task_reservation_table_name_for("custom_ctx_queue") in tables
+            assert "base_queue" not in tables
+    finally:
         await manager.close_all_pools()

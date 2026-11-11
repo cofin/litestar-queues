@@ -14,10 +14,17 @@ from unittest.mock import MagicMock
 
 import pytest
 from sqlspec.adapters.asyncpg.events.store import AsyncpgEventQueueStore
+from sqlspec.exceptions import MigrationError
 from sqlspec.migrations.schema import SchemaTarget
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.backend import _adapter_wakeup_transport, _events_queue_store, _match_store_class
+from litestar_queues.backends.sqlspec.migrations.reconcile import (
+    downgrade,
+    reconcile,
+    reconcile_stores_async,
+    reconcile_stores_sync,
+)
 from litestar_queues.backends.sqlspec.stores._dialects import MySQLQueueStore, PostgresQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
@@ -49,7 +56,13 @@ _POSTGRES_NATIVE = {"asyncpg", "psqlpy", "psycopg"}
 _RETURNING_CLAIM = {"asyncpg", "psqlpy", "psycopg"}
 
 
-def _fake_config(adapter: "str", *, is_async: "bool" = True, dialect: "str | None" = None) -> "Any":
+def _fake_config(
+    adapter: "str",
+    *,
+    is_async: "bool" = True,
+    dialect: "str | None" = None,
+    connection_config: "dict[str, object] | None" = None,
+) -> "Any":
     """Build a stand-in SQLSpec adapter config that only carries its module path."""
     module_name = f"sqlspec.adapters.{adapter}.config"
     config_type = type(
@@ -58,6 +71,7 @@ def _fake_config(adapter: "str", *, is_async: "bool" = True, dialect: "str | Non
     config = config_type()
     config.statement_config = types.SimpleNamespace(dialect=dialect)
     config.extension_config = {}
+    config.connection_config = connection_config or {}
     return config
 
 
@@ -939,3 +953,139 @@ async def test_manage_schema_false_suppresses_ddl_indexes_and_storage_options(
     assert sync_driver.executed == []
     assert async_driver.queries == []
     assert async_driver.executed == []
+
+
+@pytest.mark.parametrize(
+    ("adapter", "dialect", "connection_config"),
+    [
+        ("spanner", "postgres", None),
+        ("db2", "db2", None),
+        ("bigquery", "bigquery", None),
+        ("adbc", "flightsql", None),
+        ("adbc", "postgresql", None),
+        ("adbc", "postgresql", {"driver_name": "adbc_driver_postgresql"}),
+        ("arrow_odbc", "db2", None),
+    ],
+)
+@pytest.mark.parametrize("action", ["reconcile", "downgrade"])
+def test_reconcile_and_downgrade_reject_unsupported_builtin_adapters(
+    adapter: "str", dialect: "str", connection_config: "dict[str, object] | None", action: "str"
+) -> "None":
+    """Unsupported built-in adapters fail closed with MigrationError before executing DDL."""
+    config = _fake_config(adapter, is_async=False, dialect=dialect, connection_config=connection_config)
+    driver = MagicMock()
+    context = types.SimpleNamespace(config=config, driver=driver, is_async_driver=False, extension_config={})
+    runner = reconcile if action == "reconcile" else downgrade
+
+    with pytest.raises(MigrationError):
+        runner(cast("Any", context))
+
+    driver.execute_script.assert_not_called()
+
+
+def test_reconcile_honors_explicit_third_party_queue_store_class() -> "None":
+    """Explicit queue_store_class outside sqlspec.adapters bypasses built-in adapter rejection."""
+    call_order: list[str] = []
+
+    class CustomQueueStore(SQLSpecQueueStore):
+        data_dictionary_dialect: "ClassVar[str | None]" = "sqlite"
+
+        def prepare_schema_sync(self, driver: "Any") -> "None":
+            call_order.append("prepare")
+
+        def create_table_statement(self) -> "str":
+            call_order.append("create_table")
+            return super().create_table_statement()
+
+    class ExternalCustomConfig:
+        queue_store_class: "ClassVar[type[SQLSpecQueueStore]]" = CustomQueueStore
+        is_async: "ClassVar[bool]" = False
+        statement_config: "Any" = types.SimpleNamespace(dialect="sqlite")
+        extension_config: "dict[str, Any]" = {}
+
+    executed_scripts: list[str] = []
+    driver = types.SimpleNamespace(
+        data_dictionary=types.SimpleNamespace(get_tables=lambda *_args, **_kwargs: []),
+        execute_script=executed_scripts.append,
+        commit=MagicMock(side_effect=AssertionError("commit must stay under runner control")),
+    )
+    context = types.SimpleNamespace(
+        config=ExternalCustomConfig(), driver=driver, is_async_driver=False, extension_config={}
+    )
+
+    assert reconcile(cast("Any", context)) is None
+    assert call_order[:2] == ["prepare", "create_table"]
+    assert len(executed_scripts) == 3
+    assert any("queue_task" in stmt for stmt in executed_scripts)
+    assert any("queue_maintenance" in stmt for stmt in executed_scripts)
+    assert any("queue_task_reservation" in stmt for stmt in executed_scripts)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("is_async", [False, True])
+async def test_reconcile_stores_validate_adapter_rejects_spanner(is_async: "bool") -> "None":
+    """Direct store reconciliation helpers enforce adapter validation when requested."""
+    config = _fake_config("spanner", is_async=is_async, dialect="postgres")
+    store = create_queue_store(config)
+    driver = MagicMock()
+
+    with pytest.raises(MigrationError):
+        if is_async:
+            await reconcile_stores_async(driver, [store], config=config, validate_adapter=True)
+        else:
+            reconcile_stores_sync(driver, [store], config=config, validate_adapter=True)
+
+
+@pytest.mark.anyio
+async def test_reconcile_and_downgrade_dispatch_async_drivers() -> "None":
+    """Reconcile and downgrade return awaitables when context.is_async_driver is truthy."""
+    config = _fake_config("aiosqlite", is_async=True, dialect="sqlite")
+    executed_scripts: list[str] = []
+
+    async def get_tables(*_args: "Any", **_kwargs: "Any") -> "list[Any]":
+        return []
+
+    async def execute_script(stmt: "str") -> "None":
+        executed_scripts.append(stmt)
+
+    driver = types.SimpleNamespace(
+        data_dictionary=types.SimpleNamespace(get_tables=get_tables), execute_script=execute_script
+    )
+    context = types.SimpleNamespace(config=config, driver=driver, is_async_driver=True, extension_config={})
+
+    awaitable = reconcile(cast("Any", context))
+    assert awaitable is not None
+    await awaitable
+    assert len(executed_scripts) == 3
+
+    executed_scripts.clear()
+    down_awaitable = downgrade(cast("Any", context))
+    assert down_awaitable is not None
+    await down_awaitable
+    assert any("queue_task_reservation" in stmt for stmt in executed_scripts)
+    assert any("queue_maintenance" in stmt for stmt in executed_scripts)
+    assert any("queue_task" in stmt for stmt in executed_scripts)
+
+
+def test_reconcile_passes_schema_qualified_table_name_to_schema_target() -> "None":
+    """Schema-qualified queue_table_name values preserve schema and unqualified table identity."""
+    config = _fake_config("sqlite", is_async=False, dialect="sqlite")
+    queried_schemas: list[str | None] = []
+    executed_scripts: list[str] = []
+
+    def get_tables(_driver: "Any", *, schema: "str | None" = None) -> "list[Any]":
+        queried_schemas.append(schema)
+        return []
+
+    driver = types.SimpleNamespace(
+        data_dictionary=types.SimpleNamespace(get_tables=get_tables), execute_script=executed_scripts.append
+    )
+    context = types.SimpleNamespace(
+        config=config, driver=driver, is_async_driver=False, extension_config={"queue_table_name": "app.queue_task"}
+    )
+
+    assert reconcile(cast("Any", context)) is None
+    assert queried_schemas == ["app", "app", "app"]
+    assert any('"app"."queue_task"' in stmt for stmt in executed_scripts)
+    assert any('"app"."queue_maintenance"' in stmt for stmt in executed_scripts)
+    assert any('"app"."queue_task_reservation"' in stmt for stmt in executed_scripts)
