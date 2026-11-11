@@ -3,6 +3,7 @@ import contextlib
 import io
 import re
 import tokenize
+import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -275,3 +276,30 @@ def test_queue_config_rejects_resolver_and_provider_together() -> "None":
 
     assert QueueConfig(task_dependency_resolver=resolver).task_dependency_provider is None
     assert QueueConfig(task_dependency_provider=provider).task_dependency_resolver is None
+
+
+_SQLSPEC_MIN_FLOOR_RE = re.compile(r"^sqlspec(?:\[[^\]]+\])?\s*>=\s*(\d+)\.(\d+)(?:\.\d+)?\b")
+
+
+@pytest.mark.parametrize(
+    ("section_kind", "section_key"),
+    [("optional", "sqlspec"), ("group", "benchmark-backends"), ("group", "test-adapters")],
+)
+def test_pyproject_declares_minimum_sqlspec_reconcile_floor(section_kind: str, section_key: str) -> None:
+    """Every sqlspec dependency declaration requires at least 0.72 for schema reconciliation."""
+    pyproject_path = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    manifest = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    entries: list[object] = (
+        manifest["project"]["optional-dependencies"][section_key]
+        if section_kind == "optional"
+        else manifest["dependency-groups"][section_key]
+    )
+    sqlspec_specs = [entry for entry in entries if isinstance(entry, str) and entry.startswith("sqlspec")]
+    assert sqlspec_specs
+    floors = [
+        (int(match.group(1)), int(match.group(2)))
+        for spec in sqlspec_specs
+        if (match := _SQLSPEC_MIN_FLOOR_RE.match(spec)) is not None
+    ]
+    assert len(floors) == len(sqlspec_specs)
+    assert all(floor >= (0, 72) for floor in floors)

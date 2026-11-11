@@ -15,7 +15,7 @@ import signal
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 import click
 
@@ -24,6 +24,7 @@ from litestar_queues.consumer import run_task
 from litestar_queues.execution import get_execution_backend
 from litestar_queues.execution.base import BaseConsumerExecutionBackend
 from litestar_queues.maintenance import QueueMaintenanceService
+from litestar_queues.models import TaskStatus
 from litestar_queues.plugin import QueuePlugin
 from litestar_queues.task import get_task_registry, load_task_modules
 
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
     from litestar.cli._utils import LitestarEnv
 
     from litestar_queues.maintenance import MaintenancePhase, QueueMaintenanceSummary
-    from litestar_queues.models import QueuedTaskRecord, TaskStatus
+    from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.service import QueueService
     from litestar_queues.worker.runtime import ShutdownWatchdog
 
@@ -54,15 +55,7 @@ logger = logging.getLogger(__name__)
 
 FORCE_STOP_SIGNAL_COUNT = 2
 
-_TASK_STATUS_CHOICES: "tuple[str, ...]" = (
-    "pending",
-    "scheduled",
-    "running",
-    "completed",
-    "failed",
-    "cancelled",
-    "expired",
-)
+_TASK_STATUS_CHOICES: "tuple[str, ...]" = get_args(TaskStatus)
 
 _EPHEMERAL_UNREACHABLE = (
     "queue_backend='ephemeral' lives in a private database that its owning 'litestar run' "

@@ -11,8 +11,9 @@ For full auto-generated option tables of every command and flag, see the [CLI Re
 | `litestar queues run` | Local Worker / Broker Dispatcher | Starts a long-lived `Worker` claiming due tasks from storage (or dispatching ID-only records to configured message brokers) |
 | `litestar queues run-consumer` | Broker Consumer Fleet | Runs a long-lived pull consumer for `--backend pubsub`, `sqs`, `rabbitmq`, or `kafka` |
 | `litestar queues run-task` | Serverless One-Shot Job | Claims and executes a single task record by `--task-id` or `QUEUES_TASK_ID` (also runnable via `python -m litestar_queues.consumer`) |
-| `litestar queues run-maintenance` | Scheduled Maintenance Runner | Executes one finite, token-fenced 6-phase `QueueMaintenanceService` pass |
-| `litestar queues status` | Operator Diagnostics | Displays queue record counts by status (`pending`, `scheduled`, `running`, `completed`, `failed`, `cancelled`, `expired`), registered tasks, and schedules |
+| `litestar queues run-maintenance` | Scheduled Maintenance Runner | Executes one finite, token-fenced `QueueMaintenanceService` pass |
+| `litestar queues status` | Operator Diagnostics | Displays queue record counts by status (`pending`, `scheduled`, `running`, `completed`, `failed`, `cancelled`, `expired`) plus `total` |
+| `litestar queues list` | Operator Diagnostics | Paginates and filters stored task records (`--queue`, `--status`, `--task-name`, `--key`, `--limit`, `--offset`, `--json`) |
 | `litestar queues scheduler-health` | Operator Diagnostics | Verifies recurring schedule health and checks the configured `QueueConfig.scheduler_canary_task` |
 
 ## Running Standalone Workers (`litestar queues run`)

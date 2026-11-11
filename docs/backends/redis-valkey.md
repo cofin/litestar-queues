@@ -40,7 +40,7 @@ When `WorkerConfig.terminal_retention` is `None`, workers also inherit `terminal
 
 ## Rebuilding Maintenance and External-Dispatch Indexes
 
-To rebuild secondary maintenance and external-dispatch indexes online across existing task hashes in Redis or Valkey, call `await backend.rebuild_maintenance_indexes()`:
+`RedisQueueBackend.rebuild_maintenance_indexes()` is a one-time **offline** upgrade operation that rewrites secondary maintenance and external-dispatch sorted sets across pre-index namespaces. Stop all queue writers and workers sharing `key_prefix` before invoking it so concurrent transitions cannot overlap the secondary-set teardown and snapshot rewrite. Interrupted runs are safe to retry because the maintenance index version marker is written last:
 
 ```python
 from litestar_queues.backends.redis import RedisQueueBackend
