@@ -303,3 +303,12 @@ def test_pyproject_declares_minimum_sqlspec_reconcile_floor(section_kind: str, s
     ]
     assert len(floors) == len(sqlspec_specs)
     assert all(floor >= (0, 72) for floor in floors)
+
+
+@pytest.mark.parametrize("excluded_path", ["/.agents", "/AGENTS.md", "/uv.toml"])
+def test_pyproject_sdist_excludes_local_workspace_paths(excluded_path: str) -> None:
+    """Source distributions exclude local agent and workstation configuration files."""
+    pyproject_path = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    manifest = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    sdist_excludes = set(manifest["tool"]["hatch"]["build"]["targets"]["sdist"]["exclude"])
+    assert excluded_path in sdist_excludes
