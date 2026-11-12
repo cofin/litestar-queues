@@ -67,26 +67,15 @@ class ArrowOdbcQueueStore(SQLSpecQueueStore):
 
     def create_statements(self) -> "list[str]":
         """Return SQL Server queue artifacts for Arrow ODBC."""
-        return self._append_task_key_index(super().create_statements())
-
-    def _append_task_key_index(self, statements: "list[str]") -> "list[str]":
-        if not statements:
+        if not self._manage_schema:
             return []
-        task_key_column = _quote_tsql_identifier(self._col("task_key"))
-        table_name = self._table_object_name()
-        task_key_index = self._index_name("task_key")
-        quoted_table_name = _quote_tsql_identifier(self.table_name)
-        quoted_task_key_index = _quote_tsql_identifier(task_key_index)
-        statements.append(
-            f"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE object_id = object_id('{table_name}') "  # noqa: S608
-            f"AND name = '{task_key_index}') "
-            f"EXEC('CREATE UNIQUE INDEX {quoted_task_key_index} ON {quoted_table_name}({task_key_column}) "
-            f"WHERE {task_key_column} IS NOT NULL')"
-        )
-        return statements
+        return [self.create_table_statement(), *(stmt for _, stmt in self.companion_indexes())]
 
-    def _inline_unique_task_key(self) -> "bool":
-        return False
+    def companion_indexes(self) -> "tuple[tuple[str, str], ...]":
+        """Return companion index ``(index_name, create_sql)`` pairs for Arrow ODBC."""
+        if not self._manage_schema:
+            return ()
+        return (*super().companion_indexes(), (self._index_name("task_key"), self._create_task_key_index_sql()))
 
     def drop_statements(self) -> "list[str]":
         """Return SQL Server statements that drop Arrow ODBC queue artifacts."""
@@ -104,6 +93,22 @@ class ArrowOdbcQueueStore(SQLSpecQueueStore):
             ),
             *statements,
         ]
+
+    def _create_task_key_index_sql(self) -> "str":
+        task_key_column = _quote_tsql_identifier(self._col("task_key"))
+        table_name = self._table_object_name()
+        task_key_index = self._index_name("task_key")
+        quoted_table_name = _quote_tsql_identifier(self.table_name)
+        quoted_task_key_index = _quote_tsql_identifier(task_key_index)
+        return (
+            f"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE object_id = object_id('{table_name}') "  # noqa: S608
+            f"AND name = '{task_key_index}') "
+            f"EXEC('CREATE UNIQUE INDEX {quoted_task_key_index} ON {quoted_table_name}({task_key_column}) "
+            f"WHERE {task_key_column} IS NOT NULL')"
+        )
+
+    def _inline_unique_task_key(self) -> "bool":
+        return False
 
     def _table_object_name(self) -> "str":
         return self.table_name.replace("'", "''")

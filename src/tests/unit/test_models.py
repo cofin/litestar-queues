@@ -1,6 +1,10 @@
 from datetime import UTC, datetime, timedelta, timezone
 
-from litestar_queues.models import TERMINAL_STATUSES, QueuedTaskRecord, QueueStatistics
+import pytest
+
+import litestar_queues
+from litestar_queues import TaskListPage as RootTaskListPage
+from litestar_queues.models import TERMINAL_STATUSES, QueuedTaskRecord, QueueStatistics, TaskListPage
 
 
 def test_expired_is_terminal() -> "None":
@@ -45,3 +49,25 @@ def test_dispatch_checked_at_normalizes_to_utc() -> "None":
     assert QueuedTaskRecord(
         "task", dispatch_checked_at=naive.replace(tzinfo=offset)
     ).dispatch_checked_at == expected - timedelta(hours=2)
+
+
+@pytest.mark.parametrize(
+    ("items", "limit", "offset", "total", "expected_has_more"),
+    [
+        ([QueuedTaskRecord(task_name="tasks.one"), QueuedTaskRecord(task_name="tasks.two")], 2, 0, 5, True),
+        ([QueuedTaskRecord(task_name="tasks.five")], 2, 4, 5, False),
+        ([], 2, 6, 5, False),
+        ([], 2, 0, 0, False),
+    ],
+)
+def test_task_list_page_has_more(
+    items: "list[QueuedTaskRecord]", limit: "int", offset: "int", total: "int", expected_has_more: "bool"
+) -> "None":
+    page = TaskListPage(items=items, limit=limit, offset=offset, total=total)
+
+    assert page.has_more is expected_has_more
+
+
+def test_task_list_page_reexported_at_package_root() -> "None":
+    assert RootTaskListPage is TaskListPage
+    assert "TaskListPage" in litestar_queues.__all__

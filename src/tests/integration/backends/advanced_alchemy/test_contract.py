@@ -12,10 +12,12 @@ from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from subprocess import run
 from typing import TYPE_CHECKING, Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import MetaData, event
 from sqlalchemy.dialects import mysql, oracle, postgresql, sqlite
+from sqlalchemy.schema import CreateIndex
 
 pytest.importorskip("advanced_alchemy")
 pytest.importorskip("aiosqlite")
@@ -28,7 +30,9 @@ from advanced_alchemy.operations import MergeStatement
 from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin, SQLAlchemyBackend, SQLAlchemyBackendConfig
-from litestar_queues.models import QueuedTaskRecord, TaskRequest
+from litestar_queues.backends.advanced_alchemy import service as advanced_alchemy_service_module
+from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.models import QueuedTaskRecord, TaskListPage, TaskRequest
 from litestar_queues.task import clear_task_registry
 from tests.integration._expiry_contract import (
     assert_claim_many_reports_owned_expirations,
@@ -44,6 +48,8 @@ from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
+
+    from sqlalchemy import Table
 
     from tests.integration._backends import PostgresService
 
@@ -962,17 +968,24 @@ async def _failing_enqueue_many(self: "Any", specs: "Any") -> "Any":
 
 
 class _CountingSQLAlchemyBackend(SQLAlchemyBackend):
-    __slots__ = ("notification_batches", "operation_count")
+    __slots__ = ("notification_batches", "operation_count", "service_count")
 
     def __init__(self, *args: "Any", **kwargs: "Any") -> "None":
         super().__init__(*args, **kwargs)
         self.operation_count = 0
+        self.service_count = 0
         self.notification_batches: "list[tuple[QueuedTaskRecord, ...]]" = []
 
     @asynccontextmanager
     async def _operation(self) -> "Any":
         self.operation_count += 1
         async with super()._operation() as service:
+            yield service
+
+    @asynccontextmanager
+    async def _service(self) -> "Any":
+        self.service_count += 1
+        async with super()._service() as service:
             yield service
 
     async def notify_new_tasks(self, records: "Sequence[QueuedTaskRecord]") -> "None":
@@ -1099,3 +1112,280 @@ async def test_scheduled_execution_ref_rejects_mismatches(advanced_alchemy_backe
     from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_rejects_mismatches
 
     await assert_scheduled_execution_ref_rejects_mismatches(advanced_alchemy_backend)
+
+
+@pytest.mark.parametrize(
+    ("dialect_name", "max_identifier_length"),
+    [
+        pytest.param("sqlite", None, id="sqlite"),
+        pytest.param("postgresql", None, id="pg"),
+        pytest.param("mysql", None, id="my"),
+        pytest.param("oracle", 30, id="ora30"),
+    ],
+)
+def test_advanced_alchemy_mixin_listing_indexes_compile_across_dialects(
+    dialect_name: "str", max_identifier_length: "int | None"
+) -> "None":
+    class _IsolatedBase(UUIDAuditBase):
+        __abstract__ = True
+        metadata = MetaData()
+
+    table_name = "aa_listing_long_" + "x" * 27
+    assert len(table_name) == 43
+
+    class _LongListingTask(_IsolatedBase, QueueTaskModelMixin):
+        __tablename__ = table_name
+
+    table = cast("Table", _LongListingTask.__table__)
+    indexes_by_name = {str(index.name): index for index in table.indexes}
+    created_name = f"ix_{table_name}_created"
+    list_name = f"ix_{table_name}_list"
+    assert created_name in indexes_by_name
+    assert list_name in indexes_by_name
+
+    created_index = indexes_by_name[created_name]
+    list_index = indexes_by_name[list_name]
+    assert [column.name for column in created_index.columns] == ["created_at", "id"]
+    assert [column.name for column in list_index.columns] == ["status", "queue", "created_at", "id"]
+
+    dialect_factories = {
+        "sqlite": _sqlite_dialect,
+        "postgresql": _postgresql_dialect,
+        "mysql": _mysql_dialect,
+        "oracle": _oracle_dialect,
+    }
+    dialect = dialect_factories[dialect_name]()
+    if max_identifier_length is not None:
+        dialect.max_identifier_length = max_identifier_length
+
+    created_ddl = str(CreateIndex(created_index).compile(dialect=dialect))
+    list_ddl = str(CreateIndex(list_index).compile(dialect=dialect))
+    created_compiled_name = dialect.identifier_preparer.format_index(created_index)
+    list_compiled_name = dialect.identifier_preparer.format_index(list_index)
+
+    assert "(created_at, id)" in created_ddl
+    if dialect_name == "mysql":
+        assert "(status(32), queue(191), created_at, id)" in list_ddl
+    else:
+        assert "(status, queue, created_at, id)" in list_ddl
+
+    if max_identifier_length is not None:
+        assert len(created_compiled_name) <= max_identifier_length
+        assert len(list_compiled_name) <= max_identifier_length
+        assert created_compiled_name != list_compiled_name
+    else:
+        assert created_compiled_name == created_name
+        assert list_compiled_name == list_name
+
+
+@pytest.mark.parametrize(
+    "query_kwargs",
+    [
+        pytest.param({"limit": 0}, id="limit-zero"),
+        pytest.param({"limit": -1}, id="limit-negative"),
+        pytest.param({"limit": True}, id="limit-bool"),
+        pytest.param({"offset": -1}, id="offset-negative"),
+        pytest.param({"offset": False}, id="offset-bool"),
+        pytest.param({"status": "bogus"}, id="status-invalid"),
+        pytest.param({"status": b"pending"}, id="status-bytes"),
+        pytest.param({"status": ("pending", "bogus")}, id="status-sequence-invalid"),
+    ],
+)
+async def test_advanced_alchemy_list_tasks_validates_inputs_before_opening_session(
+    tmp_path: "Path", query_kwargs: "dict[str, Any]"
+) -> "None":
+    backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "unopened-invalid.db"), model_class=ContractQueueTask
+        )
+    )
+    with pytest.raises(QueueConfigurationError):
+        await backend.list_tasks(**query_kwargs)
+
+
+@pytest.mark.parametrize(
+    ("empty_status", "limit", "offset"),
+    [pytest.param((), 50, 0, id="empty-tuple-defaults"), pytest.param([], 10, 2, id="empty-list-bounds")],
+)
+async def test_advanced_alchemy_list_tasks_empty_status_returns_empty_page_without_opening_session(
+    tmp_path: "Path", empty_status: "Sequence[Any]", limit: "int", offset: "int"
+) -> "None":
+    backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "unopened-empty.db"), model_class=ContractQueueTask
+        )
+    )
+    page = await backend.list_tasks(status=empty_status, limit=limit, offset=offset)
+    assert page == TaskListPage(items=[], limit=limit, offset=offset, total=0)
+    assert page.has_more is False
+
+
+async def test_advanced_alchemy_list_tasks_filters_and_paginates(
+    advanced_alchemy_backend: "SQLAlchemyBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    current_now = [datetime(2026, 11, 10, 12, 0, 0, tzinfo=UTC)]
+    monkeypatch.setattr(advanced_alchemy_service_module, "_utc_now", lambda: current_now[0])
+
+    first = await advanced_alchemy_backend.enqueue("tasks.email.send", queue="emails", key="sync:1")
+    claimed_first = await advanced_alchemy_backend.claim_task(first.id)
+    assert claimed_first is not None
+    await advanced_alchemy_backend.complete_task(claimed_first.id, result={"done": 1})
+
+    current_now[0] += timedelta(seconds=10)
+    second = await advanced_alchemy_backend.enqueue("tasks.report.build", queue="reports", max_retries=0)
+    claimed_second = await advanced_alchemy_backend.claim_task(second.id)
+    assert claimed_second is not None
+    await advanced_alchemy_backend.fail_task(claimed_second.id, "report failed", retry=False)
+
+    current_now[0] += timedelta(seconds=10)
+    third = await advanced_alchemy_backend.enqueue("tasks.email.digest", queue="emails", max_retries=0)
+    claimed_third = await advanced_alchemy_backend.claim_task(third.id)
+    assert claimed_third is not None
+    await advanced_alchemy_backend.fail_task(claimed_third.id, "digest failed", retry=False)
+
+    current_now[0] += timedelta(seconds=10)
+    fourth = await advanced_alchemy_backend.enqueue("tasks.email.send", queue="emails")
+    claimed_fourth = await advanced_alchemy_backend.claim_task(fourth.id)
+    assert claimed_fourth is not None
+
+    current_now[0] += timedelta(seconds=10)
+    fifth = await advanced_alchemy_backend.enqueue("tasks.email.send", queue="emails", key="sync:1")
+
+    page_one = await advanced_alchemy_backend.list_tasks(
+        status=("completed", "failed"), queue="emails", limit=1, offset=0
+    )
+    assert [record.id for record in page_one.items] == [third.id]
+    assert page_one.total == 2
+    assert page_one.limit == 1
+    assert page_one.offset == 0
+    assert page_one.has_more is True
+
+    page_two = await advanced_alchemy_backend.list_tasks(
+        status=("completed", "failed"), queue="emails", limit=1, offset=1
+    )
+    assert [record.id for record in page_two.items] == [first.id]
+    assert page_two.total == 2
+    assert page_two.limit == 1
+    assert page_two.offset == 1
+    assert page_two.has_more is False
+
+    past_end = await advanced_alchemy_backend.list_tasks(
+        status=("completed", "failed"), queue="emails", limit=1, offset=2
+    )
+    assert past_end == TaskListPage(items=[], limit=1, offset=2, total=2)
+    assert past_end.has_more is False
+
+    running_only = await advanced_alchemy_backend.list_tasks(status="running")
+    assert [record.id for record in running_only.items] == [fourth.id]
+    assert running_only.total == 1
+
+    by_task_name = await advanced_alchemy_backend.list_tasks(task_name="tasks.email.send")
+    assert [record.id for record in by_task_name.items] == [fifth.id, fourth.id, first.id]
+    assert by_task_name.total == 3
+
+    by_key = await advanced_alchemy_backend.list_tasks(key="sync:1")
+    assert [record.id for record in by_key.items] == [fifth.id]
+    assert by_key.total == 1
+
+    all_tasks = await advanced_alchemy_backend.list_tasks(limit=10, offset=0)
+    assert [record.id for record in all_tasks.items] == [fifth.id, fourth.id, third.id, second.id, first.id]
+    assert all_tasks.total == 5
+    assert all_tasks.has_more is False
+
+
+async def test_advanced_alchemy_list_tasks_uses_single_session_and_skips_empty_get_many(
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    current_now = [datetime(2026, 11, 10, 14, 0, 0, tzinfo=UTC)]
+    monkeypatch.setattr(advanced_alchemy_service_module, "_utc_now", lambda: current_now[0])
+
+    sqlalchemy_config = _sqlite_config(tmp_path / "list-session.db")
+    await create_tables(sqlalchemy_config, ContractQueueTask)
+    backend = _CountingSQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=sqlalchemy_config, model_class=ContractQueueTask)
+    )
+    executed_sql: "list[str]" = []
+    engine = sqlalchemy_config.get_engine()
+
+    def _record_statement(
+        _conn: "Any", _cursor: "Any", statement: "str", _parameters: "Any", _context: "Any", _executemany: "bool"
+    ) -> "None":
+        executed_sql.append(statement)
+
+    await backend.open()
+    event.listen(engine.sync_engine, "before_cursor_execute", _record_statement)
+    try:
+        await backend.enqueue("tasks.session.one", queue="emails", key="sync:1")
+        current_now[0] += timedelta(seconds=10)
+        newer = await backend.enqueue("tasks.session.two", queue="emails")
+
+        backend.service_count = 0
+        executed_sql.clear()
+        assert await backend.list_tasks(status=()) == TaskListPage(items=[], limit=50, offset=0, total=0)
+        assert backend.service_count == 0
+        assert executed_sql == []
+
+        backend.service_count = 0
+        executed_sql.clear()
+        page = await backend.list_tasks(status="pending", queue="emails", limit=1, offset=0)
+        assert backend.service_count == 1
+        assert len(executed_sql) == 2
+        assert [record.id for record in page.items] == [newer.id]
+        assert page.total == 2
+        assert page.has_more is True
+
+        backend.service_count = 0
+        executed_sql.clear()
+        beyond = await backend.list_tasks(status="pending", queue="emails", limit=1, offset=5)
+        assert backend.service_count == 1
+        assert len(executed_sql) == 1
+        assert beyond == TaskListPage(items=[], limit=1, offset=5, total=2)
+
+        backend.service_count = 0
+        executed_sql.clear()
+        zero_matches = await backend.list_tasks(queue="missing")
+        assert backend.service_count == 1
+        assert len(executed_sql) == 1
+        assert zero_matches == TaskListPage(items=[], limit=50, offset=0, total=0)
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", _record_statement)
+        await backend.close()
+        await engine.dispose()
+
+
+async def test_advanced_alchemy_service_list_tasks_validates_and_short_circuits_directly(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    seeded = await advanced_alchemy_backend.enqueue("tasks.service.direct", queue="emails", key="direct:1")
+    async with advanced_alchemy_backend._service() as service:
+        with pytest.raises(QueueConfigurationError):
+            await service.list_tasks(limit=0)
+        empty_page = await service.list_tasks(status=(), limit=5, offset=1)
+        assert empty_page == TaskListPage(items=[], limit=5, offset=1, total=0)
+        direct_key = await service.list_tasks(key="direct:1")
+        assert [record.id for record in direct_key.items] == [seeded.id]
+
+
+async def test_advanced_alchemy_list_tasks_orders_equal_timestamps_by_id_desc(
+    advanced_alchemy_backend: "SQLAlchemyBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    fixed_now = datetime(2026, 11, 10, 16, 0, 0, tzinfo=UTC)
+    monkeypatch.setattr(advanced_alchemy_service_module, "_utc_now", lambda: fixed_now)
+
+    low = await advanced_alchemy_backend.enqueue("tasks.equal_ts", id=UUID(int=1))
+    high = await advanced_alchemy_backend.enqueue("tasks.equal_ts", id=UUID(int=2))
+    assert low.created_at == fixed_now
+    assert high.created_at == fixed_now
+
+    first_page = await advanced_alchemy_backend.list_tasks(task_name="tasks.equal_ts", limit=1, offset=0)
+    assert [record.id for record in first_page.items] == [UUID(int=2)]
+    assert first_page.total == 2
+    assert first_page.has_more is True
+
+    second_page = await advanced_alchemy_backend.list_tasks(task_name="tasks.equal_ts", limit=1, offset=1)
+    assert [record.id for record in second_page.items] == [UUID(int=1)]
+    assert second_page.total == 2
+    assert second_page.has_more is False
+
+    combined = await advanced_alchemy_backend.list_tasks(task_name="tasks.equal_ts", limit=2, offset=0)
+    assert [record.id for record in combined.items] == [UUID(int=2), UUID(int=1)]

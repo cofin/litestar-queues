@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 import pytest
 
@@ -9,6 +10,7 @@ from litestar_queues import (
     HeartbeatTouch,
     QueueConfig,
     QueueService,
+    TaskListPage,
     TaskRequest,
     WorkerConfig,
     task,
@@ -23,7 +25,14 @@ from litestar_queues.events import (
     publish_task_progress,
 )
 from litestar_queues.events.query import QueueEventQuery
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.task import clear_task_registry
+from tests.helpers._timing import MutableClock
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from litestar_queues.models import TaskStatus
 
 pytestmark = pytest.mark.anyio
 
@@ -829,3 +838,129 @@ async def test_dispatch_repair_base_defaults_fail_closed() -> "None":
         await backend.reserve_scheduled_execution_ref(
             uuid4(), "cloudtasks", "reference", expected_retry_count=0, expected_execution_ref=None
         )
+
+
+@pytest.mark.parametrize(
+    ("filters", "expected_names"),
+    [
+        ({}, ("r5", "r4", "r3", "r2", "r1")),
+        ({"status": "running"}, ("r4",)),
+        ({"status": ("pending", "scheduled")}, ("r3", "r2")),
+        ({"status": ("failed", "pending", "failed")}, ("r5", "r2")),
+        ({"queue": "q1"}, ("r3", "r2", "r1")),
+        ({"task_name": "t1"}, ("r4", "r2", "r1")),
+        ({"key": "k1"}, ("r2", "r1")),
+        ({"status": ("pending", "completed"), "queue": "q1", "task_name": "t1", "key": "k1"}, ("r2", "r1")),
+        ({"status": "running", "queue": "q1"}, ()),
+    ],
+)
+async def test_memory_backend_list_tasks_filters_and_orders_newest_first(
+    monkeypatch: "pytest.MonkeyPatch", filters: "dict[str, Any]", expected_names: "tuple[str, ...]"
+) -> "None":
+    clock = MutableClock()
+    monkeypatch.setattr("litestar_queues.backends.memory.backend._utc_now", clock)
+    backend = InMemoryQueueBackend()
+
+    r1 = await backend.enqueue("t1", queue="q1", key="k1")
+    await backend.claim_task(r1.id)
+    await backend.complete_task(r1.id, result="done")
+
+    clock.advance(timedelta(seconds=1))
+    r2 = await backend.enqueue("t1", queue="q1", key="k1")
+
+    clock.advance(timedelta(seconds=1))
+    r3 = await backend.enqueue("t2", queue="q1", key="k2", scheduled_at=clock() + timedelta(minutes=10))
+
+    clock.advance(timedelta(seconds=1))
+    r4 = await backend.enqueue("t1", queue="q2", key="k3")
+    await backend.claim_task(r4.id)
+
+    clock.advance(timedelta(seconds=1))
+    r5 = await backend.enqueue("t2", queue="q2", key="k4", max_retries=0)
+    await backend.claim_task(r5.id)
+    await backend.fail_task(r5.id, "failed")
+
+    records = {"r1": r1, "r2": r2, "r3": r3, "r4": r4, "r5": r5}
+    page = await backend.list_tasks(**filters)
+
+    assert [record.id for record in page.items] == [records[name].id for name in expected_names]
+    assert page.total == len(expected_names)
+    assert page.has_more is False
+
+
+async def test_memory_backend_list_tasks_tie_breaks_equal_created_at_by_id_desc(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    clock = MutableClock()
+    monkeypatch.setattr("litestar_queues.backends.memory.backend._utc_now", clock)
+    backend = InMemoryQueueBackend()
+
+    await backend.enqueue("tasks.tie", id=UUID(int=2))
+    await backend.enqueue("tasks.tie", id=UUID(int=1))
+    await backend.enqueue("tasks.tie", id=UUID(int=3))
+
+    first_page = await backend.list_tasks(limit=2, offset=0)
+    second_page = await backend.list_tasks(limit=2, offset=2)
+
+    assert [record.id for record in first_page.items] == [UUID(int=3), UUID(int=2)]
+    assert first_page.total == 3
+    assert first_page.has_more is True
+
+    assert [record.id for record in second_page.items] == [UUID(int=1)]
+    assert second_page.total == 3
+    assert second_page.has_more is False
+
+
+@pytest.mark.parametrize("empty_status", [(), []])
+async def test_memory_backend_list_tasks_lock_and_empty_status_short_circuit(
+    empty_status: "Sequence[TaskStatus]",
+) -> "None":
+    backend = InMemoryQueueBackend()
+    await backend.enqueue("tasks.one")
+    await backend.enqueue("tasks.two")
+    lock = _CountingAsyncLock()
+    backend._lock = cast("Any", lock)
+
+    empty_page = await backend.list_tasks(status=empty_status)
+    assert empty_page == TaskListPage(items=[], limit=50, offset=0, total=0)
+    assert lock.entries == 0
+
+    non_empty_page = await backend.list_tasks(limit=2)
+    assert len(non_empty_page.items) == 2
+    assert non_empty_page.total == 2
+    assert lock.entries == 1
+
+
+async def test_memory_backend_list_tasks_offset_past_total_returns_empty_slice() -> "None":
+    backend = InMemoryQueueBackend()
+    await backend.enqueue("tasks.one")
+    await backend.enqueue("tasks.two")
+
+    page = await backend.list_tasks(limit=5, offset=10)
+
+    assert page == TaskListPage(items=[], limit=5, offset=10, total=2)
+    assert page.has_more is False
+
+
+@pytest.mark.parametrize(
+    "query_kwargs",
+    [
+        {"limit": 0},
+        {"limit": -1},
+        {"limit": True},
+        {"offset": -1},
+        {"offset": False},
+        {"status": "bogus"},
+        {"status": ["pending", "bogus"]},
+        {"status": (), "limit": 0},
+    ],
+)
+async def test_memory_backend_list_tasks_rejects_invalid_arguments(query_kwargs: "dict[str, Any]") -> "None":
+    backend = InMemoryQueueBackend()
+    lock = _CountingAsyncLock()
+    backend._lock = cast("Any", lock)
+
+    with pytest.raises(QueueConfigurationError):
+        await backend.list_tasks(**query_kwargs)
+
+    assert lock.entries == 0

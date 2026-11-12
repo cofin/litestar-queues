@@ -44,6 +44,8 @@ class SpannerQueueStore(SQLSpecQueueStore):
         return [
             self.drop_dispatch_repair_index_sql().replace("DROP INDEX ", "DROP INDEX IF EXISTS ", 1),
             f"DROP INDEX {self._quoted_index_name('task_key')}",
+            f"DROP INDEX {self._quoted_index_name('list')}",
+            f"DROP INDEX {self._quoted_index_name('created')}",
             f"DROP INDEX {self._quoted_index_name('heartbeat')}",
             f"DROP INDEX {self._quoted_index_name('pending')}",
             f"DROP TABLE {self._quoted_table_name()}",
@@ -138,6 +140,15 @@ class SpannerQueueStore(SQLSpecQueueStore):
             (
                 f"CREATE UNIQUE NULL_FILTERED INDEX {self._quoted_index_name('task_key')} "
                 f"ON {self._quoted_table_name()} ({self._quoted_col('task_key')})"
+            ),
+            (
+                f"CREATE INDEX {self._quoted_index_name('created')} ON {self._quoted_table_name()} "
+                f"({self._quoted_col('created_at')} DESC, {self._quoted_col('id')} DESC)"
+            ),
+            (
+                f"CREATE INDEX {self._quoted_index_name('list')} ON {self._quoted_table_name()} "
+                f"({self._quoted_col('status')}, {self._quoted_col('queue')}, "
+                f"{self._quoted_col('created_at')} DESC, {self._quoted_col('id')} DESC)"
             ),
         ]
 

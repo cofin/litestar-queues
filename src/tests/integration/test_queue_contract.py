@@ -18,12 +18,22 @@ from litestar_queues import (
     WorkerConfig,
     task,
 )
+from litestar_queues import models as models_module
 from litestar_queues.backends import InMemoryQueueBackend
+from litestar_queues.backends.memory import backend as memory_backend_module
 from litestar_queues.events import QueueEventPublisher, QueueEventsConfig
+from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.models import TaskListPage
 from litestar_queues.task import clear_task_registry
 
+try:
+    from litestar_queues.backends.sqlspec import backend as sqlspec_backend_module
+except ImportError:
+    sqlspec_backend_module = None  # type: ignore[assignment]
+
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
+    from pathlib import Path
 
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.events.query import QueueEventOrder
@@ -1006,3 +1016,242 @@ async def test_backend_contract_event_actor(queue_backend: "BaseQueueBackend") -
     from tests.integration._event_extra_contract import assert_event_actor_contract
 
     await assert_event_actor_contract(queue_backend)
+
+
+async def _run_list_tasks_parity_workload(
+    service: "QueueService", backend: "BaseQueueBackend", advance_clock: "Callable[[], None]"
+) -> "dict[str, object]":
+    t1 = await service.enqueue("tasks.parity.email", queue="emails", key="parity:completed:1")
+    claimed_t1 = await backend.claim_task(t1.id)
+    assert claimed_t1 is not None
+    await backend.complete_task(claimed_t1.id, result={"ok": True})
+
+    advance_clock()
+    t2 = await service.enqueue("tasks.parity.report", queue="reports", retries=0)
+    claimed_t2 = await backend.claim_task(t2.id)
+    assert claimed_t2 is not None
+    await backend.fail_task(claimed_t2.id, "report failed", retry=False)
+
+    advance_clock()
+    t3 = await service.enqueue("tasks.parity.digest", queue="emails", retries=0)
+    claimed_t3 = await backend.claim_task(t3.id)
+    assert claimed_t3 is not None
+    await backend.fail_task(claimed_t3.id, "digest failed", retry=False)
+
+    advance_clock()
+    t4 = await service.enqueue("tasks.parity.email", queue="emails")
+    claimed_t4 = await backend.claim_task(t4.id)
+    assert claimed_t4 is not None
+
+    advance_clock()
+    t5 = await service.enqueue("tasks.parity.email", queue="emails", key="parity:active:1")
+
+    labels = {t1.id: "t1", t2.id: "t2", t3.id: "t3", t4.id: "t4", t5.id: "t5"}
+
+    page_one = await service.list_tasks(status=("completed", "failed"), queue="emails", limit=1, offset=0)
+    page_two = await service.list_tasks(status=("completed", "failed"), queue="emails", limit=1, offset=1)
+    by_task_name = await service.list_tasks(task_name="tasks.parity.email", limit=10, offset=0)
+    by_key = await service.list_tasks(key="parity:active:1")
+    empty_status = await service.list_tasks(status=())
+    past_end = await service.list_tasks(limit=2, offset=10)
+
+    assert [item.id for item in page_one.items] == [t3.id]
+    assert [item.id for item in page_two.items] == [t1.id]
+    assert [item.id for item in by_task_name.items] == [t5.id, t4.id, t1.id]
+    assert [item.id for item in by_key.items] == [t5.id]
+    assert empty_status == TaskListPage(items=[], limit=50, offset=0, total=0)
+    assert past_end == TaskListPage(items=[], limit=2, offset=10, total=5)
+
+    with pytest.raises(QueueConfigurationError):
+        await service.list_tasks(limit=0)
+    with pytest.raises(QueueConfigurationError):
+        await service.list_tasks(status="bogus")  # type: ignore[arg-type]
+
+    return {
+        "page_one": ([labels[item.id] for item in page_one.items], page_one.total, page_one.has_more),
+        "page_two": ([labels[item.id] for item in page_two.items], page_two.total, page_two.has_more),
+        "by_task_name": ([labels[item.id] for item in by_task_name.items], by_task_name.total, by_task_name.has_more),
+        "by_key": ([labels[item.id] for item in by_key.items], by_key.total, by_key.has_more),
+        "empty_status": (len(empty_status.items), empty_status.total, empty_status.has_more),
+        "past_end": (len(past_end.items), past_end.total, past_end.has_more),
+    }
+
+
+async def test_queue_service_list_tasks_advanced_alchemy_and_memory_parity(
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    pytest.importorskip("advanced_alchemy")
+    pytest.importorskip("aiosqlite")
+    pytest.importorskip("sqlalchemy")
+
+    from advanced_alchemy.base import UUIDAuditBase
+    from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
+    from sqlalchemy import MetaData
+
+    from litestar_queues.backends.advanced_alchemy import (
+        QueueTaskModelMixin,
+        SQLAlchemyBackend,
+        SQLAlchemyBackendConfig,
+    )
+    from litestar_queues.backends.advanced_alchemy import service as advanced_alchemy_service_module
+    from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
+
+    clear_task_registry()
+
+    @task("tasks.parity.email")
+    async def parity_email() -> "str":
+        return "email"
+
+    @task("tasks.parity.report")
+    async def parity_report() -> "str":
+        return "report"
+
+    @task("tasks.parity.digest")
+    async def parity_digest() -> "str":
+        return "digest"
+
+    class _ParityBase(UUIDAuditBase):
+        __abstract__ = True
+        metadata = MetaData()
+
+    class _ParityQueueTask(_ParityBase, QueueTaskModelMixin):
+        __tablename__ = "aa_queue_service_parity_task"
+
+    current_now = [datetime(2026, 11, 10, 18, 0, 0, tzinfo=UTC)]
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: "tzinfo | None" = None) -> "Self":
+            value = current_now[0] if tz is not None else current_now[0].replace(tzinfo=None)
+            return cls(
+                value.year,
+                value.month,
+                value.day,
+                value.hour,
+                value.minute,
+                value.second,
+                value.microsecond,
+                tzinfo=value.tzinfo,
+            )
+
+    def _advance_clock() -> "None":
+        current_now[0] += timedelta(seconds=10)
+
+    monkeypatch.setattr(models_module, "datetime", _FixedDateTime)
+    monkeypatch.setattr(advanced_alchemy_service_module, "_utc_now", lambda: current_now[0])
+    monkeypatch.setattr(memory_backend_module, "_utc_now", lambda: current_now[0])
+
+    sqlalchemy_config = SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{tmp_path / 'parity.db'}")
+    await create_tables(sqlalchemy_config, _ParityQueueTask)
+    aa_backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=sqlalchemy_config, model_class=_ParityQueueTask)
+    )
+    memory_backend = InMemoryQueueBackend()
+    worker_cfg = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
+
+    try:
+        async with QueueService(worker_cfg, queue_backend=aa_backend) as aa_service:
+            aa_snapshot = await _run_list_tasks_parity_workload(aa_service, aa_backend, _advance_clock)
+    finally:
+        await sqlalchemy_config.get_engine().dispose()
+
+    current_now[0] = datetime(2026, 11, 10, 18, 0, 0, tzinfo=UTC)
+    async with QueueService(worker_cfg, queue_backend=memory_backend) as memory_service:
+        memory_snapshot = await _run_list_tasks_parity_workload(memory_service, memory_backend, _advance_clock)
+
+    assert aa_snapshot == memory_snapshot
+    assert aa_snapshot == {
+        "page_one": (["t3"], 2, True),
+        "page_two": (["t1"], 2, False),
+        "by_task_name": (["t5", "t4", "t1"], 3, False),
+        "by_key": (["t5"], 1, False),
+        "empty_status": (0, 0, False),
+        "past_end": (0, 5, False),
+    }
+
+
+async def _seed_list_tasks_contract_records(
+    queue_backend: "BaseQueueBackend", advance_clock: "Callable[[], None]"
+) -> "dict[str, QueuedTaskRecord]":
+    t1 = await queue_backend.enqueue("tasks.list.alpha", queue="alpha")
+    advance_clock()
+    t2 = await queue_backend.enqueue("tasks.list.beta", queue="beta", key="k1")
+    claimed_t2 = await queue_backend.claim_task(t2.id)
+    assert claimed_t2 is not None
+    advance_clock()
+    t3 = await queue_backend.enqueue("tasks.list.alpha", queue="beta", max_retries=0)
+    claimed_t3 = await queue_backend.claim_task(t3.id)
+    assert claimed_t3 is not None
+    await queue_backend.complete_task(claimed_t3.id, result={"ok": True})
+    advance_clock()
+    t4 = await queue_backend.enqueue("tasks.list.beta", queue="alpha", max_retries=0)
+    claimed_t4 = await queue_backend.claim_task(t4.id)
+    assert claimed_t4 is not None
+    await queue_backend.fail_task(claimed_t4.id, "boom", retry=False)
+    advance_clock()
+    tie_low = await queue_backend.enqueue("tasks.list.tie", queue="tie", id=UUID(int=1))
+    tie_high = await queue_backend.enqueue("tasks.list.tie", queue="tie", id=UUID(int=2))
+    return {"t1": t1, "t2": t2, "t3": t3, "t4": t4, "tie_low": tie_low, "tie_high": tie_high}
+
+
+async def test_backend_contract_list_tasks_filters_paginates_and_tiebreaks(
+    queue_backend: "BaseQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """Backend list_tasks filters, slices, orders newest-first, and breaks timestamp ties by id DESC."""
+    current_now = [datetime(2026, 11, 10, 18, 0, 0, tzinfo=UTC)]
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: "tzinfo | None" = None) -> "Self":
+            value = current_now[0] if tz is not None else current_now[0].replace(tzinfo=None)
+            return cls(
+                value.year,
+                value.month,
+                value.day,
+                value.hour,
+                value.minute,
+                value.second,
+                value.microsecond,
+                tzinfo=value.tzinfo,
+            )
+
+    def _advance_clock() -> "None":
+        current_now[0] += timedelta(seconds=10)
+
+    monkeypatch.setattr(models_module, "datetime", _FixedDateTime)
+    monkeypatch.setattr(memory_backend_module, "_utc_now", lambda: current_now[0])
+    if sqlspec_backend_module is not None:
+        monkeypatch.setattr(sqlspec_backend_module, "_utc_now", lambda: current_now[0])
+
+    seeded = await _seed_list_tasks_contract_records(queue_backend, _advance_clock)
+    all_page = await queue_backend.list_tasks(limit=2, offset=0)
+    slice_page = await queue_backend.list_tasks(status=("pending", "running", "completed", "failed"), limit=2, offset=1)
+    beta_page = await queue_backend.list_tasks(status=("running", "completed"), queue="beta")
+    alpha_tasks = await queue_backend.list_tasks(task_name="tasks.list.alpha")
+    keyed_page = await queue_backend.list_tasks(key="k1")
+    tie_page_0 = await queue_backend.list_tasks(queue="tie", limit=1, offset=0)
+    tie_page_1 = await queue_backend.list_tasks(queue="tie", limit=1, offset=1)
+    empty_status = await queue_backend.list_tasks(status=())
+    past_end = await queue_backend.list_tasks(queue="tie", limit=1, offset=5)
+
+    assert (all_page.total, all_page.has_more) == (6, True)
+    assert [item.id for item in all_page.items] == [seeded["tie_high"].id, seeded["tie_low"].id]
+    assert (slice_page.total, slice_page.has_more) == (6, True)
+    assert [item.id for item in slice_page.items] == [seeded["tie_low"].id, seeded["t4"].id]
+    assert (beta_page.total, beta_page.has_more) == (2, False)
+    assert [item.id for item in beta_page.items] == [seeded["t3"].id, seeded["t2"].id]
+    assert (alpha_tasks.total, [item.id for item in alpha_tasks.items]) == (2, [seeded["t3"].id, seeded["t1"].id])
+    assert (keyed_page.total, keyed_page.has_more, [item.id for item in keyed_page.items]) == (
+        1,
+        False,
+        [seeded["t2"].id],
+    )
+    assert (tie_page_0.total, tie_page_0.has_more, [item.id for item in tie_page_0.items]) == (2, True, [UUID(int=2)])
+    assert (tie_page_1.total, tie_page_1.has_more, [item.id for item in tie_page_1.items]) == (2, False, [UUID(int=1)])
+    assert empty_status == TaskListPage(items=[], limit=50, offset=0, total=0)
+    assert past_end == TaskListPage(items=[], limit=1, offset=5, total=2)
+
+    with pytest.raises(QueueConfigurationError):
+        await queue_backend.list_tasks(limit=0)
+    with pytest.raises(QueueConfigurationError):
+        await queue_backend.list_tasks(status="bogus")  # type: ignore[arg-type]

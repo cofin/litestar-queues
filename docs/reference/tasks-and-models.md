@@ -60,6 +60,10 @@ API reference for task registration, recurring schedule configuration, dependenc
     options:
       inherited_members: false
 
+::: litestar_queues.models.TaskListPage
+    options:
+      inherited_members: false
+
 ::: litestar_queues.models.QueueBackendCapabilities
     options:
       inherited_members: false

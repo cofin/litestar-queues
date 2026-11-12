@@ -1,7 +1,7 @@
 """Explicit SQLSpec schema setup helpers for integration tests."""
 
 from inspect import isawaitable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from litestar_queues import QueueConfig, WorkerConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
@@ -32,6 +32,7 @@ async def run_queue_migrations(
     queue_table_name: "str" = "queue_task",
     event_history_enabled: "bool" = False,
     event_history_table_name: "str | None" = None,
+    migration_mode: "Literal['versioned', 'reconcile'] | None" = None,
 ) -> "None":
     """Register and run the queue migration through SQLSpec itself."""
     configure_queue_migration_extension(
@@ -39,6 +40,7 @@ async def run_queue_migrations(
         queue_table_name=queue_table_name,
         event_history_enabled=event_history_enabled,
         event_history_table_name=event_history_table_name,
+        migration_mode=migration_mode,
     )
     result = sqlspec_config.migrate_up(echo=False)
     if isawaitable(result):

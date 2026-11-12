@@ -47,3 +47,35 @@ record = await queue_service.get_task(task_id)
 if record is not None and record.is_terminal:
     print(record.status, record.result)
 ```
+
+## Listing & Filtering Tasks
+
+Inspect operational slices across statuses, logical queues, registered task names, or deduplication keys with `await queue_service.list_tasks(...)`, which returns a [`TaskListPage`](../reference/tasks-and-models.md#litestar_queues.models.TaskListPage):
+
+```python
+offset = 0
+failed_records = []
+while True:
+    page = await queue_service.list_tasks(
+        status=("failed", "expired"),
+        queue="billing",
+        task_name="billing.generate_invoice",
+        key=None,
+        limit=50,
+        offset=offset,
+    )
+    failed_records.extend(page.items)
+    if not page.has_more or not page.items:
+        break
+    offset += len(page.items)
+```
+
+- **Page Contract**: `TaskListPage` exposes `items` (`list[QueuedTaskRecord]`), `limit`, `offset`, `total` (count of all matching records across pages), and the `has_more` property (`(offset + len(items)) < total`).
+- **Deterministic Ordering**: Results are ordered newest-first by `(created_at DESC, id DESC)` across every storage backend.
+- **Validation & Empty Status Fast Path**: `limit` defaults to `50` (`>= 1`) and `offset` defaults to `0` (`>= 0`); passing booleans, out-of-range integers, or unknown `status` strings raises `QueueConfigurationError`. Passing an empty status sequence (`status=()`) returns `TaskListPage(items=[], limit=limit, offset=offset, total=0)` without hitting storage.
+
+From the command line, inspect the same filtered slices against persistent backends using `litestar queues list`:
+
+```bash
+litestar --app app:app queues list --status failed --queue billing --limit 25 --json
+```

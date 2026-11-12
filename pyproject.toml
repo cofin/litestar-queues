@@ -64,7 +64,7 @@ sqs = ["aiobotocore>=3.8.0"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
 redis = ["redis>=8.1.0"]
-sqlspec = ["sqlspec>=0.63.0"]
+sqlspec = ["sqlspec>=0.72.0"]
 valkey = ["valkey>=6.0.0"]
 
 ######################
@@ -76,7 +76,23 @@ requires = ["hatchling"]
 
 [tool.hatch.build.targets.sdist]
 dev-mode-dirs = ["."]
-exclude = ["/.github", "/docs"]
+exclude = [
+  "/.agent",
+  "/.agents",
+  "/.antigravitycli",
+  "/.beads",
+  "/.claude",
+  "/.codex",
+  "/.dolt",
+  "/.gemini",
+  "/.github",
+  "/AGENTS.md",
+  "/CLAUDE.md",
+  "/GEMINI.md",
+  "/docs",
+  "/specs",
+  "/uv.toml",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/litestar_queues"]
@@ -145,7 +161,7 @@ benchmark-backends = [
   "psycopg[binary,pool]>=3.2.0",
   "redis>=8.1.0",
   "sqlalchemy>=2.0.0,<2.1.0",
-  "sqlspec[performance]>=0.63.0",
+  "sqlspec[performance]>=0.72.0",
   "valkey>=6.0.0",
 ]
 # ARQ runs in its pinned isolated script because its Redis <6 requirement conflicts.
@@ -183,7 +199,7 @@ test-adapters = [
   "pytest-databases>=0.19.0",
   "redis>=8.1.0",
   "sqlalchemy>=2.0.0,<2.1.0",
-  "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql,mssql-python]>=0.63.0",
+  "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql,mssql-python]>=0.72.0",
   "valkey>=6.0.0",
 ]
 test-core = [
@@ -277,7 +293,7 @@ sqlspec = false
 pytest-databases = { git = "https://github.com/litestar-org/pytest-databases.git", branch = "test/clientless-all" }
 
 [tool.ruff]
-exclude = [".venv", "node_modules", "tmp", ".tmp", ".bugs", "docs/_build", "site"]
+exclude = [".agents", ".venv", "node_modules", "tmp", ".tmp", ".bugs", "docs/_build", "site"]
 include = [
   "pyproject.toml",
   "src/litestar_queues/**/*.py",

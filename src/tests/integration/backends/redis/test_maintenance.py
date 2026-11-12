@@ -1,5 +1,6 @@
 """Redis distributed maintenance coordination and bounded-operation contract."""
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
@@ -9,7 +10,9 @@ import pytest
 
 pytest.importorskip("redis")
 
+from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.models import TaskListPage
 from tests.integration.backends._maintenance_asserts import (
     assert_bounded_cleanup_terminal,
     assert_bounded_stale_recovery,
@@ -18,7 +21,6 @@ from tests.integration.backends._maintenance_asserts import (
 )
 
 if TYPE_CHECKING:
-    from litestar_queues.backends.redis import RedisQueueBackend
     from tests.integration.backends.redis.conftest import RedisService
 
 pytestmark = pytest.mark.anyio
@@ -427,5 +429,40 @@ async def test_redis_terminal_ttl_retry_clears_pexpire_and_terminal_meta(redis_s
         assert retried is not None and retried.status == "pending"
         assert int(await client.pttl(task_key)) == -1
         assert await client.hget(backend._terminal_meta_key, str(record.id)) is None
+    finally:
+        await backend.close()
+
+
+async def test_redis_list_tasks_excludes_terminal_ttl_expired_hashes_before_sweep(
+    redis_service: "RedisService",
+) -> "None":
+    prefix = f"litestar_queues:test:list_ttl:{uuid.uuid4().hex}"
+    url = f"redis://{redis_service.host}:{redis_service.port}/{redis_service.db}"
+    backend = RedisQueueBackend(
+        backend_config=RedisBackendConfig(url=url, key_prefix=prefix, worker_wakeups=False, terminal_ttl=0.05)
+    )
+    await backend.open()
+    try:
+        first_done = await backend.enqueue("tasks.ttl.first")
+        second_done = await backend.enqueue("tasks.ttl.second")
+        pending = await backend.enqueue("tasks.ttl.pending")
+
+        assert await backend.claim_task(first_done.id) is not None
+        assert await backend.complete_task(first_done.id, result={"ok": 1}) is not None
+        assert await backend.claim_task(second_done.id) is not None
+        assert await backend.complete_task(second_done.id, result={"ok": 2}) is not None
+
+        await asyncio.sleep(0.15)
+
+        client = cast("Any", await backend._get_client())
+        assert await client.scard(backend._status_key("completed")) == 2
+
+        completed_page = await backend.list_tasks(status="completed")
+        assert completed_page == TaskListPage(items=[], limit=50, offset=0, total=0)
+        assert completed_page.has_more is False
+
+        all_page = await backend.list_tasks()
+        assert all_page.total == 1
+        assert [record.id for record in all_page.items] == [pending.id]
     finally:
         await backend.close()

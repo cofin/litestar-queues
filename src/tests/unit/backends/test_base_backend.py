@@ -1,13 +1,24 @@
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 import pytest
 
 from litestar_queues import HeartbeatTouch, InMemoryQueueBackend
 from litestar_queues.backends import BaseQueueBackend
-from litestar_queues.backends.base import attempts_consumed, interruption_count, retry_schedule, stale_requeue_priority
+from litestar_queues.backends.base import (
+    VALID_TASK_STATUSES,
+    attempts_consumed,
+    interruption_count,
+    normalize_task_list_query,
+    normalize_task_statuses,
+    record_matches_filters,
+    retry_schedule,
+    stale_requeue_priority,
+    validate_task_list_pagination,
+)
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import QueuedTaskRecord
+from litestar_queues.models import QueuedTaskRecord, TaskStatus
 
 pytestmark = pytest.mark.anyio
 
@@ -71,6 +82,7 @@ _REQUIRED_CONTRACT_CALLS = {
     "get_statistics": lambda b: b.get_statistics(),
     "list_completed_by_task": lambda b: b.list_completed_by_task("tasks.sync"),
     "list_running_external": lambda b: b.list_running_external(),
+    "list_tasks": lambda b: b.list_tasks(),
     "assign_worker": lambda b: b.assign_worker(uuid4(), worker_id="worker-a", expected_retry_count=0),
     "interrupt_task": lambda b: b.interrupt_task(
         uuid4(), expected_retry_count=0, worker_id="worker-a", queued_at=datetime.now(UTC)
@@ -143,3 +155,86 @@ def test_stale_requeue_priority_policies() -> "None":
 def test_stale_requeue_priority_rejects_a_non_integer_callable() -> "None":
     with pytest.raises(QueueConfigurationError):
         stale_requeue_priority(9, lambda _priority: "high")  # type: ignore[arg-type,return-value]
+
+
+def test_valid_task_statuses_matches_task_status_literal() -> "None":
+    assert frozenset({"pending", "scheduled", "running", "completed", "failed", "cancelled", "expired"}) == (
+        VALID_TASK_STATUSES
+    )
+
+
+def test_task_list_validation_helpers_direct_defaults() -> "None":
+    assert validate_task_list_pagination() == (50, 0)
+    assert normalize_task_statuses("pending") == ("pending",)
+    assert normalize_task_statuses(None) is None
+
+
+@pytest.mark.parametrize(
+    ("status", "limit", "offset", "expected"),
+    [
+        (None, 50, 0, (None, 50, 0)),
+        ("failed", 1, 2, (("failed",), 1, 2)),
+        (["completed", "failed", "completed"], 50, 0, (("completed", "failed"), 50, 0)),
+        ((), 50, 0, ((), 50, 0)),
+        ([], 10, 5, ((), 10, 5)),
+    ],
+)
+def test_normalize_task_list_query_valid_inputs(
+    status: "Any", limit: "int", offset: "int", expected: "tuple[tuple[TaskStatus, ...] | None, int, int]"
+) -> "None":
+    assert normalize_task_list_query(status=status, limit=limit, offset=offset) == expected
+
+
+@pytest.mark.parametrize(
+    ("status", "limit", "offset"),
+    [
+        (None, 0, 0),
+        (None, -5, 0),
+        (None, True, 0),
+        (None, False, 0),
+        (None, 1.5, 0),
+        (None, "10", 0),
+        (None, None, 0),
+        (None, 50, -1),
+        (None, 50, False),
+        (None, 50, True),
+        (None, 50, 1.5),
+        (None, 50, "1"),
+        (None, 50, None),
+        ((), 0, 0),
+        ((), 50, -1),
+    ],
+)
+def test_normalize_task_list_query_rejects_invalid_pagination(status: "Any", limit: "Any", offset: "Any") -> "None":
+    with pytest.raises(QueueConfigurationError):
+        normalize_task_list_query(status=status, limit=limit, offset=offset)
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["bogus", "", ["pending", "invalid"], b"pending", b"", {"pending"}, 123, True, {"pending": 1}, ["pending", 123]],
+)
+def test_normalize_task_list_query_rejects_invalid_statuses(status: "Any") -> "None":
+    with pytest.raises(QueueConfigurationError):
+        normalize_task_list_query(status=status)
+
+
+@pytest.mark.parametrize(
+    ("record", "statuses", "key", "expected"),
+    [
+        (QueuedTaskRecord(task_name="tasks.a", status="failed", key="k-1"), {"completed", "failed"}, "k-1", True),
+        (QueuedTaskRecord(task_name="tasks.a", status="failed", key="k-1"), {"completed", "failed"}, "k-2", False),
+        (QueuedTaskRecord(task_name="tasks.a", status="failed", key="k-1"), (), "k-1", False),
+        (QueuedTaskRecord(task_name="tasks.a", status="failed", key="k-1"), None, "k-1", True),
+        (QueuedTaskRecord(task_name="tasks.a", status="failed", key="k-1"), {"failed"}, None, True),
+        (QueuedTaskRecord(task_name="tasks.a", status="failed", key="k-1"), {"pending"}, "k-1", False),
+        (QueuedTaskRecord(task_name="tasks.a", status="pending", key=None), {"pending"}, "k-1", False),
+    ],
+)
+def test_record_matches_filters_status_and_key(
+    record: "QueuedTaskRecord",
+    statuses: "set[TaskStatus] | tuple[TaskStatus, ...] | None",
+    key: "str | None",
+    expected: "bool",
+) -> "None":
+    assert record_matches_filters(record, statuses=statuses, key=key) is expected

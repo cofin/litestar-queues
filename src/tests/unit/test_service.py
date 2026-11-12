@@ -8,15 +8,24 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from litestar_queues import EventDeliveryConfig, InMemoryQueueEventSink, QueueConfig, QueueService, WorkerConfig, task
+from litestar_queues import (
+    EventDeliveryConfig,
+    InMemoryQueueEventSink,
+    QueueConfig,
+    QueueService,
+    TaskListPage,
+    WorkerConfig,
+    task,
+)
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
 from litestar_queues.events import EventHistoryConfig, QueueEventPublisher, QueueEventsConfig
-from litestar_queues.exceptions import JobCancelledError
+from litestar_queues.exceptions import JobCancelledError, QueueConfigurationError
 from litestar_queues.execution import BaseExecutionBackend
 from litestar_queues.execution.base import ExecutionCancelResult
 from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 from litestar_queues.task import clear_task_registry
+from tests.helpers._timing import MutableClock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -26,7 +35,7 @@ if TYPE_CHECKING:
     from litestar_queues.events import QueueEvent, QueueEventLog, QueueEventLogRecord, QueueEventStageSummary
     from litestar_queues.events.query import QueueEventQuery
     from litestar_queues.events.typing import OffsetPagination
-    from litestar_queues.models import QueuedTaskRecord
+    from litestar_queues.models import QueuedTaskRecord, TaskStatus
 
 pytestmark = pytest.mark.anyio
 
@@ -2866,3 +2875,140 @@ async def test_task_execute_record_filters_extra_kwargs_against_signature() -> N
     assert received == {"item_id": 7, "db_session": "sess-1"}
     assert res2.status == "completed"
     assert res2.result == {"item_id": 9, "db_session": "sess-1", "settings": "cfg-1", "extra_unused": 99}
+
+
+class _RecordingListQueueBackend(InMemoryQueueBackend):
+    __slots__ = ("list_calls",)
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.list_calls = 0
+
+    async def list_tasks(
+        self,
+        *,
+        status: "TaskStatus | Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+        limit: "int" = 50,
+        offset: "int" = 0,
+    ) -> "TaskListPage":
+        self.list_calls += 1
+        return await super().list_tasks(
+            status=status, queue=queue, task_name=task_name, key=key, limit=limit, offset=offset
+        )
+
+
+async def test_service_list_tasks_filters_and_paginates(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    clock = MutableClock()
+    monkeypatch.setattr("litestar_queues.backends.memory.backend._utc_now", clock)
+    backend = InMemoryQueueBackend()
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    )
+
+    async with service:
+        completed_email = await backend.enqueue("tasks.email", queue="emails", key="k-old")
+        await backend.claim_task(completed_email.id)
+        await backend.complete_task(completed_email.id, result="ok")
+
+        clock.advance(timedelta(seconds=1))
+        completed_billing = await backend.enqueue("tasks.bill", queue="billing", key="k-bill")
+        await backend.claim_task(completed_billing.id)
+        await backend.complete_task(completed_billing.id, result="ok")
+
+        clock.advance(timedelta(seconds=1))
+        pending_email = await backend.enqueue("tasks.email", queue="emails", key="k-pend")
+
+        clock.advance(timedelta(seconds=1))
+        failed_email = await backend.enqueue("tasks.digest", queue="emails", key="k-fail", max_retries=0)
+        await backend.claim_task(failed_email.id)
+        await backend.fail_task(failed_email.id, "boom")
+
+        clock.advance(timedelta(seconds=1))
+        running_email = await backend.enqueue("tasks.email", queue="emails", key="k-run")
+        await backend.claim_task(running_email.id)
+
+        first_page = await service.list_tasks(status=("completed", "failed"), queue="emails", limit=1, offset=0)
+        second_page = await service.list_tasks(status=("completed", "failed"), queue="emails", limit=1, offset=1)
+        by_key = await service.list_tasks(key="k-old")
+        by_task_name = await service.list_tasks(task_name="tasks.email", queue="emails")
+        all_tasks = await service.list_tasks()
+
+    assert isinstance(second_page, TaskListPage)
+    assert first_page.total == 2
+    assert [record.id for record in first_page.items] == [failed_email.id]
+    assert first_page.has_more is True
+
+    assert second_page.total == 2
+    assert second_page.limit == 1
+    assert second_page.offset == 1
+    assert [record.id for record in second_page.items] == [completed_email.id]
+    assert second_page.has_more is False
+
+    assert [record.id for record in by_key.items] == [completed_email.id]
+    assert by_key.total == 1
+    assert [record.id for record in by_task_name.items] == [running_email.id, pending_email.id, completed_email.id]
+    assert by_task_name.total == 3
+    assert [record.id for record in all_tasks.items] == [
+        running_email.id,
+        failed_email.id,
+        pending_email.id,
+        completed_billing.id,
+        completed_email.id,
+    ]
+    assert all_tasks.total == 5
+    assert all_tasks.has_more is False
+
+
+@pytest.mark.parametrize("empty_status", [(), []])
+async def test_service_list_tasks_empty_status_short_circuits_before_backend(
+    empty_status: "Sequence[TaskStatus]",
+) -> "None":
+    backend = _RecordingListQueueBackend()
+    await backend.enqueue("tasks.email", queue="emails")
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    )
+
+    async with service:
+        page = await service.list_tasks(status=empty_status, limit=10, offset=2)
+
+    assert page == TaskListPage(items=[], limit=10, offset=2, total=0)
+    assert page.has_more is False
+    assert backend.list_calls == 0
+
+
+@pytest.mark.parametrize(
+    "query_kwargs",
+    [
+        {"limit": 0},
+        {"limit": -1},
+        {"limit": True},
+        {"limit": False},
+        {"offset": -1},
+        {"offset": False},
+        {"offset": True},
+        {"status": "bogus"},
+        {"status": ["pending", "bogus"]},
+        {"status": (), "limit": 0},
+        {"status": (), "offset": -1},
+        {"status": b"pending"},
+        {"status": {"pending"}},
+    ],
+)
+async def test_service_list_tasks_rejects_invalid_query_before_backend(query_kwargs: "dict[str, Any]") -> "None":
+    backend = _RecordingListQueueBackend()
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    )
+
+    async with service:
+        with pytest.raises(QueueConfigurationError):
+            await service.list_tasks(**query_kwargs)
+
+    assert backend.list_calls == 0

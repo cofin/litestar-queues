@@ -32,6 +32,7 @@ from tests.integration._expiry_contract import (
     assert_finalized_dispatch_claims_after_queue_deadline,
     assert_future_deadline_is_claimable,
 )
+from tests.integration.backends._list_tasks_asserts import assert_list_tasks_filters_tie_breaks_and_paginates
 
 if TYPE_CHECKING:
     from litestar_queues.backends.redis import RedisQueueBackend
@@ -757,3 +758,9 @@ async def test_redis_scheduled_execution_ref_rejects_mismatches(redis_backend: "
     from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_rejects_mismatches
 
     await assert_scheduled_execution_ref_rejects_mismatches(redis_backend)
+
+
+async def test_redis_backend_list_tasks_filters_tie_breaks_and_paginates(
+    redis_backend: "RedisQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    await assert_list_tasks_filters_tie_breaks_and_paginates(redis_backend, monkeypatch, redis_backend_module)

@@ -23,6 +23,7 @@ from litestar_queues.backends.base import (
     attempts_consumed,
     interruption_count,
     is_external_dispatch_reservation,
+    normalize_task_list_query,
     record_matches_filters,
     retry_schedule,
     stale_requeue_error,
@@ -36,6 +37,12 @@ from litestar_queues.backends.sqlspec.config import (
 from litestar_queues.backends.sqlspec.event_log import SQLSpecQueueEventLog, create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.maintenance import SQLSpecMaintenanceStore, create_maintenance_store
+from litestar_queues.backends.sqlspec.migrations.reconcile import (
+    reconcile_events_queue_async,
+    reconcile_events_queue_sync,
+    reconcile_stores_async,
+    reconcile_stores_sync,
+)
 from litestar_queues.backends.sqlspec.reservation import create_task_reservation_store
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
@@ -53,6 +60,7 @@ from litestar_queues.models import (
     QueuedTaskRecord,
     QueueStatistics,
     StaleTaskRecoveryResult,
+    TaskListPage,
     TaskRequest,
     TaskReservation,
     TaskStatus,
@@ -144,6 +152,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_maintenance_store",
         "_maintenance_table_name",
         "_manage_schema",
+        "_migration_mode",
         "_native_json_columns",
         "_native_observability_enabled",
         "_opened",
@@ -179,6 +188,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._column_map = resolve_column_map(backend_config.column_map)
         self._native_json_columns = validate_native_json_columns(frozenset(backend_config.native_json_columns))
         self._manage_schema = backend_config.manage_schema
+        self._migration_mode = backend_config.migration_mode
         self._terminal_ttl = backend_config.terminal_ttl
         self._sqlspec = backend_config.sqlspec
         self._sqlspec_config: "SQLSpecConfig | SQLSpecStoreConfig | None" = backend_config.sqlspec_config
@@ -401,38 +411,23 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         )
 
     async def create_schema(self) -> "None":
-        """Create the SQLSpec queue table and indexes."""
+        """Create or reconcile the SQLSpec queue tables, indexes, and events queue."""
         if not self._manage_schema:
             return
         config = self._get_sqlspec_config()
         queue_store = self._get_store()
-        stores = [queue_store, self._get_maintenance_store(), self._get_task_reservation_store()]
-        event_log_store = self._get_event_log_store_if_enabled()
-        if event_log_store is not None:
-            stores.append(event_log_store)
-        driver_stores: "list[SQLSpecQueueStore]" = []
-        for store in stores:
-            create_for_config = getattr(store, "create_schema_for_config", None)
-            if callable(create_for_config):
-                result = create_for_config(config)
-                if isawaitable(result):
-                    await result
-            else:
-                driver_stores.append(store)
+        driver_stores = await self._collect_driver_stores(config, queue_store)
         provision_events_queue = self._should_provision_events_queue()
         if not driver_stores and not provision_events_queue:
             return
         async with self._session() as driver:
-            statements: "list[str]" = []
-            for store in driver_stores:
-                if store is queue_store:
-                    statements.extend(await _create_schema_statements(store, driver))
-                else:
-                    statements.extend(store.create_statements())
-            if provision_events_queue:
-                statements.extend(_events_queue_create_statements(config))
-            for statement in statements:
-                await driver.execute_script(statement)
+            if self._migration_mode == "reconcile":
+                events_store = _events_queue_store(config) if provision_events_queue else None
+                await self._reconcile_schema_session(driver, driver_stores, config, events_store)
+            else:
+                await self._apply_versioned_schema_session(
+                    driver, queue_store, driver_stores, config, provision_events_queue
+                )
             await driver.commit()
 
     async def enqueue(
@@ -685,6 +680,53 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         """Return due pending or scheduled tasks ordered for execution."""
         rows = await self._select_pending_rows(limit=limit, queue=queue, execution_backend=execution_backend)
         return [self._record_from_row(row) for row in rows]
+
+    async def list_tasks(
+        self,
+        *,
+        status: "TaskStatus | Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+        limit: "int" = 50,
+        offset: "int" = 0,
+    ) -> "TaskListPage":
+        """Return a paginated slice of queued tasks ordered newest first.
+
+        Returns:
+            A ``TaskListPage`` containing hydrated task records and pagination metadata.
+
+        Raises:
+            QueueConfigurationError: If ``status``, ``limit``, or ``offset`` is invalid.
+        """
+        statuses, resolved_limit, resolved_offset = normalize_task_list_query(status=status, limit=limit, offset=offset)
+        if statuses == ():
+            return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=0)
+        store = self._get_store()
+        async with self._session() as driver:
+            count_row = await self._select_one_row(
+                driver, store.count_tasks(statuses=statuses, queue=queue, task_name=task_name, key=key)
+            )
+            total = int(count_row["total"]) if count_row is not None else 0
+            if total == 0 or resolved_offset >= total:
+                return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=total)
+            rows = await self._select_rows(
+                driver,
+                store.list_tasks(
+                    statuses=statuses,
+                    queue=queue,
+                    task_name=task_name,
+                    key=key,
+                    limit=resolved_limit,
+                    offset=resolved_offset,
+                ),
+            )
+        return TaskListPage(
+            items=[self._record_from_row(row) for row in rows],
+            limit=resolved_limit,
+            offset=resolved_offset,
+            total=total,
+        )
 
     async def claim_task(
         self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
@@ -2195,6 +2237,76 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     if isawaitable(result):
                         await result
 
+    async def _collect_driver_stores(
+        self, config: "SQLSpecConfig", queue_store: "SQLSpecQueueStore"
+    ) -> "list[SQLSpecQueueStore]":
+        event_log_store = self._get_event_log_store_if_enabled()
+        stores = [
+            queue_store,
+            *([event_log_store] if event_log_store is not None else ()),
+            self._get_maintenance_store(),
+            self._get_task_reservation_store(),
+        ]
+        driver_stores: "list[SQLSpecQueueStore]" = []
+        for store in stores:
+            create_for_config = getattr(store, "create_schema_for_config", None)
+            if callable(create_for_config):
+                result = create_for_config(config)
+                if isawaitable(result):
+                    await result
+            else:
+                driver_stores.append(store)
+        return driver_stores
+
+    async def _reconcile_schema_session(
+        self,
+        driver: "SQLSpecDriver",
+        driver_stores: "Sequence[SQLSpecQueueStore]",
+        config: "SQLSpecConfig",
+        events_store: "Any",
+    ) -> "None":
+        if isinstance(driver, _ManagedAsyncDriver):
+            await driver.run_sync(
+                self._reconcile_sync_session, driver_stores, config, events_store, self._wakeup_backend
+            )
+            return
+        if driver_stores:
+            await reconcile_stores_async(driver, driver_stores, config=config)
+        if events_store is not None:
+            await reconcile_events_queue_async(driver, events_store, self._wakeup_backend)
+
+    @staticmethod
+    async def _apply_versioned_schema_session(
+        driver: "SQLSpecDriver",
+        queue_store: "SQLSpecQueueStore",
+        driver_stores: "Sequence[SQLSpecQueueStore]",
+        config: "SQLSpecConfig",
+        provision_events_queue: "bool",
+    ) -> "None":
+        statements: "list[str]" = []
+        for store in driver_stores:
+            if store is queue_store:
+                statements.extend(await _create_schema_statements(store, driver))
+            else:
+                statements.extend(store.create_statements())
+        if provision_events_queue:
+            statements.extend(_events_queue_create_statements(config))
+        for statement in statements:
+            await driver.execute_script(statement)
+
+    @staticmethod
+    def _reconcile_sync_session(
+        driver: "Any",
+        stores: "Sequence[SQLSpecQueueStore]",
+        config: "Any",
+        events_store: "Any",
+        backend_name: "str | None",
+    ) -> "None":
+        if stores:
+            reconcile_stores_sync(driver, stores, config=config)
+        if events_store is not None:
+            reconcile_events_queue_sync(driver, events_store, backend_name)
+
     @staticmethod
     def _default_sqlspec_config() -> "SQLSpecConfig":
         from sqlspec.adapters.aiosqlite import AiosqliteConfig
@@ -2921,6 +3033,10 @@ class _ManagedAsyncDriver:
             Case-folded table names visible in ``schema``.
         """
         return await async_(_sync_table_names, executor=self._executor)(self._driver, schema)
+
+    async def run_sync(self, fn: "Callable[..., Any]", *args: "Any", **kwargs: "Any") -> "Any":
+        """Execute a synchronous callable with the raw driver on the session executor."""
+        return await async_(fn, executor=self._executor)(self._driver, *args, **kwargs)
 
     def __getattr__(self, name: "str") -> "Any":
         attr = getattr(self._driver, name)

@@ -39,7 +39,7 @@ Before running any phase, `QueueMaintenanceService` acquires a token-fenced dist
 
 | Storage Backend | Coordination & Reservation Tables | Migration / Schema Provisioning |
 | :--- | :--- | :--- |
-| **SQLSpec (`SQLSpecBackendConfig`)** | `queue_maintenance`, `queue_task_reservation` | Included in migration `0001_create_queue_tasks` (`configure_queue_migration_extension`) and `await backend.create_schema()` |
+| **SQLSpec (`SQLSpecBackendConfig`)** | `queue_maintenance`, `queue_task_reservation` | Provisioned by default SQLSpec extension schema reconciliation (`migration_mode="reconcile"` via `configure_queue_migration_extension`), versioned migration `0001_create_queue_tasks`, and `await backend.create_schema()` |
 | **Advanced Alchemy (`SQLAlchemyBackendConfig`)** | `QueueMaintenanceModel` (`QueueMaintenanceModelMixin`), `QueueTaskReservationModel` (`QueueTaskReservationModelMixin`) | Managed via your application's Alembic migration history |
 | **Redis & Valkey (`RedisBackendConfig`, `ValkeyBackendConfig`)** | `{prefix}:maintenance:<name>`, `{prefix}:task_reservations` | Managed automatically via atomic Lua scripts |
 

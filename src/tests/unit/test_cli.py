@@ -7,12 +7,16 @@ because ``CliRunner`` cannot deliver real signals.
 import json
 import os
 import sys
+from types import ModuleType
 from typing import TYPE_CHECKING, Any, cast
 
+import anyio
 import pytest
+from litestar import Litestar
 
-from litestar_queues import WorkerConfig
+from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig, _cli, task
 from litestar_queues.events import QueueEventRetentionRule
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -63,6 +67,7 @@ def test_litestar_queues_help_lists_subcommands(monkeypatch: "pytest.MonkeyPatch
     result = _runner_invoke("tests.helpers.support.cli_app:app", ["queues", "--help"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
+    assert "list" in result.stdout
     assert "run" in result.stdout
     assert "status" in result.stdout
     assert "scheduler-health" in result.stdout
@@ -196,6 +201,7 @@ def test_cli_module_exposes_public_command_callbacks() -> "None":
     from litestar_queues import _cli
 
     expected_callbacks = {
+        "list": "list_command",
         "run": "run_command",
         "run-maintenance": "run_maintenance_command",
         "scheduler-health": "scheduler_health_command",
@@ -689,3 +695,277 @@ async def test_cli_maintain_run_enters_app_lifespan_when_configured(
     assert events == ["startup:True", "shutdown"]
     assert get_default_service() is None
     assert json.loads(capsys.readouterr().out)["outcome"] == "completed"
+
+
+def _invoke_litestar_app(app: "Litestar", args: "list[str]", monkeypatch: "pytest.MonkeyPatch") -> "Result":
+    """Invoke ``litestar`` CLI against an isolated in-process ``Litestar`` instance."""
+    module_name = "tests_cli_isolated_app"
+    app_module = ModuleType(module_name)
+    setattr(app_module, "app", app)
+    sys.modules[module_name] = app_module
+    try:
+        return _runner_invoke(f"{module_name}:app", args, monkeypatch)
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+def _seed_cli_list_app() -> "tuple[Litestar, dict[str, UUID]]":
+    """Create an in-memory ``Litestar`` app seeded with four tasks across queues and statuses."""
+    plugin = QueuePlugin(QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="asgi")))
+    app = Litestar(plugins=[plugin])
+
+    @task("tasks.cli_a", queue="default")
+    async def cli_a() -> "str":
+        return "a"
+
+    @task("tasks.cli_b", queue="emails")
+    async def cli_b() -> "str":
+        return "b"
+
+    @task("tasks.cli_c", queue="emails")
+    async def cli_c() -> "str":
+        return "c"
+
+    @task("tasks.cli_d", queue="billing")
+    async def cli_d() -> "str":
+        return "d"
+
+    ids: "dict[str, UUID]" = {}
+
+    async def _seed() -> "None":
+        service = plugin.get_service()
+        await service.open()
+        try:
+            backend = service.get_queue_backend()
+            res_a = await service.enqueue(cli_a, key="k1")
+            await anyio.sleep(0.002)
+            res_b = await service.enqueue(cli_b, key="k2")
+            await backend.complete_task(res_b.id, result="ok")
+            await anyio.sleep(0.002)
+            res_c = await service.enqueue(cli_c, key="k3")
+            await backend.fail_task(res_c.id, "boom", retry=False)
+            await anyio.sleep(0.002)
+            res_d = await service.enqueue(cli_d, key="k4")
+            await backend.complete_task(res_d.id, result="ok")
+            ids.update({"a": res_a.id, "b": res_b.id, "c": res_c.id, "d": res_d.id})
+        finally:
+            await service.close()
+
+    anyio.run(_seed)
+    return app, ids
+
+
+def test_queues_list_help_exposes_options(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    result = _runner_invoke("tests.helpers.support.cli_app:app", ["queues", "list", "--help"], monkeypatch)
+
+    assert result.exit_code == 0, result.stderr
+    assert "--status" in result.stdout
+    assert "--queue" in result.stdout
+    assert "--task-name" in result.stdout
+    assert "--key" in result.stdout
+    assert "--limit" in result.stdout
+    assert "--offset" in result.stdout
+    assert "--json" in result.stdout
+
+
+def test_queues_list_empty_table_output(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    app = Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="asgi")))])
+
+    result = _invoke_litestar_app(app, ["queues", "list"], monkeypatch)
+
+    assert result.exit_code == 0, result.stderr
+    assert "no tasks found (total=0, limit=50, offset=0, has_more=false)" in result.stdout
+
+
+def test_queues_list_filtered_paginated_json(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    app, ids = _seed_cli_list_app()
+
+    result = _invoke_litestar_app(
+        app,
+        [
+            "queues",
+            "list",
+            "--status",
+            "completed",
+            "--status",
+            "failed",
+            "--queue",
+            "emails",
+            "--limit",
+            "1",
+            "--offset",
+            "1",
+            "--json",
+        ],
+        monkeypatch,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    lines = result.stdout.strip().splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["total"] == 2
+    assert payload["limit"] == 1
+    assert payload["offset"] == 1
+    assert payload["has_more"] is False
+    assert len(payload["items"]) == 1
+    item = payload["items"][0]
+    assert item["id"] == str(ids["b"])
+    assert item["status"] == "completed"
+    assert item["queue"] == "emails"
+    assert item["key"] == "k2"
+    expected_keys = {
+        "id",
+        "task_name",
+        "queue",
+        "status",
+        "key",
+        "priority",
+        "retry_count",
+        "max_retries",
+        "execution_backend",
+        "execution_profile",
+        "execution_ref",
+        "worker_id",
+        "created_at",
+        "queued_at",
+        "scheduled_at",
+        "started_at",
+        "completed_at",
+        "heartbeat_at",
+        "expires_at",
+        "error",
+    }
+    assert set(item) == expected_keys
+    assert {"args", "kwargs", "result", "metadata"}.isdisjoint(item)
+
+
+def test_queues_list_filters_by_task_name_and_key_and_renders_table(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    app, ids = _seed_cli_list_app()
+
+    json_result = _invoke_litestar_app(
+        app, ["queues", "list", "--task-name", "tasks.cli_a", "--key", "k1", "--json"], monkeypatch
+    )
+
+    assert json_result.exit_code == 0, json_result.stderr
+    payload = json.loads(json_result.stdout)
+    assert payload["total"] == 1
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["id"] == str(ids["a"])
+    assert payload["items"][0]["key"] == "k1"
+    assert payload["items"][0]["task_name"] == "tasks.cli_a"
+
+    table_result = _invoke_litestar_app(app, ["queues", "list", "--queue", "emails"], monkeypatch)
+
+    assert table_result.exit_code == 0, table_result.stderr
+    assert "ID" in table_result.stdout
+    assert "Status" in table_result.stdout
+    assert "Queue" in table_result.stdout
+    assert "Task" in table_result.stdout
+    assert "Created" in table_result.stdout
+    assert "Key" in table_result.stdout
+    assert str(ids["b"]) in table_result.stdout
+    assert str(ids["c"]) in table_result.stdout
+    assert "total=2 limit=50 offset=0 has_more=false" in table_result.stdout
+
+
+def test_queues_list_json_handles_unserializable_task_payloads(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    plugin = QueuePlugin(QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="asgi")))
+    app = Litestar(plugins=[plugin])
+
+    @task("tasks.non_json")
+    async def non_json(payload: "object") -> "object":
+        return payload
+
+    async def _seed() -> "None":
+        service = plugin.get_service()
+        await service.open()
+        try:
+            enqueued = await service.enqueue(non_json, object(), metadata={"raw": object()})
+            await service.get_queue_backend().complete_task(enqueued.id, result=object())
+        finally:
+            await service.close()
+
+    anyio.run(_seed)
+
+    result = _invoke_litestar_app(app, ["queues", "list", "--json"], monkeypatch)
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["total"] == 1
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["task_name"] == "tasks.non_json"
+    assert {"args", "kwargs", "result", "metadata"}.isdisjoint(payload["items"][0])
+
+
+def test_queues_list_rejects_ephemeral_backend(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    app = Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend="ephemeral"))])
+
+    result = _invoke_litestar_app(app, ["queues", "list"], monkeypatch)
+
+    normalized_output = " ".join(result.output.replace("│", " ").split())
+    assert result.exit_code != 0
+    assert "ephemeral" in normalized_output.lower()
+    assert "litestar queues list" in normalized_output
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["queues", "list", "--limit", "0"], ["queues", "list", "--offset", "-1"], ["queues", "list", "--status", "bogus"]],
+)
+def test_queues_list_rejects_invalid_options(args: "list[str]", monkeypatch: "pytest.MonkeyPatch") -> "None":
+    app = Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="asgi")))])
+
+    result = _invoke_litestar_app(app, args, monkeypatch)
+
+    assert result.exit_code == 2
+
+
+class _FakeListServiceHost:
+    def __init__(self, *, open_error: "Exception | None" = None, list_error: "Exception | None" = None) -> "None":
+        self._open_error = open_error
+        self._list_error = list_error
+        self.open_calls = 0
+        self.close_calls = 0
+
+    async def open(self) -> "None":
+        self.open_calls += 1
+        if self._open_error is not None:
+            raise self._open_error
+
+    async def close(self) -> "None":
+        self.close_calls += 1
+
+    async def list_tasks(self, **kwargs: "object") -> "object":
+        if self._list_error is not None:
+            raise self._list_error
+        return None
+
+
+class _FakeListPlugin:
+    def __init__(self, service: "_FakeListServiceHost") -> "None":
+        self._service = service
+
+    def get_service(self, state: "object | None" = None) -> "_FakeListServiceHost":
+        return self._service
+
+
+@pytest.mark.parametrize(("failure_stage", "expected_error"), [("open", "open failed"), ("list", "bad limit")])
+async def test_list_run_closes_service_cleanly_on_error(
+    capsys: "pytest.CaptureFixture[str]", failure_stage: "str", expected_error: "str"
+) -> "None":
+    service = _FakeListServiceHost(
+        open_error=QueueConfigurationError(expected_error) if failure_stage == "open" else None,
+        list_error=QueueConfigurationError(expected_error) if failure_stage == "list" else None,
+    )
+    plugin = _FakeListPlugin(service)
+
+    code = await _cli._list_run(
+        cast("Any", plugin), statuses=(), queue_filter=None, task_name=None, key=None, limit=50, offset=0, as_json=False
+    )
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert service.open_calls == 1
+    assert service.close_calls == 1
+    assert f"error: {expected_error}" in captured.err

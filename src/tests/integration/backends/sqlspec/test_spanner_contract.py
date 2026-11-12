@@ -42,6 +42,32 @@ def test_sqlspec_spanner_store_deserializes_native_json_wrappers() -> "None":
     assert store.deserialize_json("result_json", spanner_json(None)) is None
 
 
+def test_sqlspec_spanner_store_compiles_list_tasks_and_count_tasks() -> "None":
+    store = SpannerQueueStore(config=cast("Any", SimpleNamespace(extension_config={})))
+
+    count_built = store.count_tasks(
+        statuses=("pending", "failed"), queue="default", task_name="tasks.spanner", key="k1"
+    ).build(dialect="spanner")
+    list_built = store.list_tasks(
+        statuses=("pending", "failed"), queue="default", task_name="tasks.spanner", key="k1", limit=5, offset=0
+    ).build(dialect="spanner")
+    empty_built = store.list_tasks(statuses=(), limit=5, offset=0).build(dialect="spanner")
+
+    assert "COUNT(*) AS `total`" in count_built.sql
+    assert "@status_1" in list_built.sql
+    assert "@queue" in list_built.sql
+    assert "@task_name" in list_built.sql
+    assert "@task_key" in list_built.sql
+    assert "ORDER BY" in list_built.sql
+    assert "`created_at` DESC" in list_built.sql
+    assert "`id` DESC" in list_built.sql
+    assert "LIMIT 5" in list_built.sql
+    assert "OFFSET 0" in list_built.sql
+    assert "WHERE FALSE" not in empty_built.sql.upper()
+    assert "IN ()" not in empty_built.sql.upper()
+    assert "IS NULL" in empty_built.sql.upper()
+
+
 async def test_sqlspec_spanner_backend_live_contract_round_trip() -> "None":
     try:
         await _run_spanner_contract(
@@ -81,6 +107,10 @@ async def _run_spanner_contract(connection_config: "dict[str, object]", *, table
         assert stored.kwargs == {"ok": True}
         assert stored.metadata == {"source": "live"}
         assert stored.result == {"done": True}
+
+        completed_page = await backend.list_tasks(status="completed", queue="default", limit=5, offset=0)
+        assert completed_page.total >= 1
+        assert record.id in {item.id for item in completed_page.items}
 
         from tests.integration._uniqueness_contract import (
             assert_reservation_survives_terminal_cleanup,

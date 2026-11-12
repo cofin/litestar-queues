@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from sqlspec.data_dictionary import DialectConfig
 
     from litestar_queues.backends.sqlspec._typing import DatetimeParam, SQLSpecStoreConfig
+    from litestar_queues.models import TaskStatus
 
 __all__ = ("BulkHeartbeatStatement", "SQLSpecQueueStore")
 
@@ -72,6 +73,13 @@ _TASK_COLUMNS = (
 )
 _DUE_STATUSES = ("pending", "scheduled")
 _MAX_REPAIR_INDEX_LENGTH = 63
+_BOUNDED_INDEX_SUFFIXES = frozenset({"dispatch_repair", "created", "list"})
+_SQLGLOT_DIALECT_ALIASES: "dict[str, str]" = {
+    "cockroachdb": "postgres",
+    "mariadb": "mysql",
+    "mssql": "tsql",
+    "postgresql": "postgres",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,19 +208,53 @@ class SQLSpecQueueStore:
             return False
         return _pyarrow_available()
 
+    def sqlglot_dialect(self) -> "str | None":
+        """Return the SQLGlot dialect name compatible with ``SchemaTarget.from_ddl``."""
+        dialect = self._data_dictionary_dialect_name()
+        if dialect is None:
+            return None
+        lowered = dialect.lower()
+        return _SQLGLOT_DIALECT_ALIASES.get(lowered, lowered)
+
+    def create_table_statement(self) -> "str":
+        """Return the table-only ``CREATE TABLE`` statement, or empty string when unmanaged."""
+        if not self._manage_schema:
+            return ""
+        return self._create_table_sql()
+
+    def companion_indexes(self) -> "tuple[tuple[str, str], ...]":
+        """Return ``(index_name, create_sql)`` pairs for non-table indexes."""
+        if not self._manage_schema:
+            return ()
+        return self._companion_index_specs(include_expiration=True)
+
+    def prepare_schema_sync(self, driver: "Any") -> "None":
+        """Prepare dialect capabilities using a synchronous driver prior to DDL inspection."""
+
+    async def prepare_schema_async(self, driver: "Any") -> "None":
+        """Prepare dialect capabilities using an asynchronous driver prior to DDL inspection."""
+
+    def reconcile_storage_options_sync(self, driver: "Any") -> "None":
+        """Reconcile dialect-specific table storage options on a synchronous driver."""
+
+    async def reconcile_storage_options_async(self, driver: "Any") -> "None":
+        """Reconcile dialect-specific table storage options on an asynchronous driver."""
+
     def create_statements(self) -> "list[str]":
         """Return statements that create the queue table and indexes."""
         if not self._manage_schema:
             return []
-        return [self._create_table_sql(), *self._create_index_statements()]
+        return [self.create_table_statement(), *(stmt for _, stmt in self.companion_indexes())]
 
     def drop_statements(self) -> "list[str]":
         """Return statements that drop queue artifacts."""
         if not self._manage_schema:
             return []
         return [
-            self._to_sql(sql.drop_index(self._index_name("heartbeat")).if_exists()),
-            self._to_sql(sql.drop_index(self._index_name("pending")).if_exists()),
+            self._drop_index_statement("list"),
+            self._drop_index_statement("created"),
+            self._drop_index_statement("heartbeat"),
+            self._drop_index_statement("pending"),
             self._to_sql(sql.drop_table(self.table_name).if_exists()),
         ]
 
@@ -1264,6 +1306,42 @@ RETURNING {target}.{id_col} AS id
         """Return a SELECT statement for all queue records."""
         return self._select_all()
 
+    def count_tasks(
+        self,
+        *,
+        statuses: "Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+    ) -> "Select":
+        """Return a COUNT statement matching the task listing predicates."""
+        return self._filter_tasks(
+            sql.select(sql.count("*").as_("total")).from_(self.table_name),
+            statuses=statuses,
+            queue=queue,
+            task_name=task_name,
+            key=key,
+        )
+
+    def list_tasks(
+        self,
+        *,
+        statuses: "Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+        limit: "int" = 50,
+        offset: "int" = 0,
+    ) -> "Select":
+        """Return a paginated SELECT statement ordered newest-first."""
+        statement = self._filter_tasks(self._select_all(), statuses=statuses, queue=queue, task_name=task_name, key=key)
+        return (
+            statement
+            .order_by(_raw_order(f"{self._col('created_at')} DESC"), _raw_order(f"{self._col('id')} DESC"))
+            .offset(offset)
+            .limit(limit)
+        )
+
     def statistics(self, *, queue: "str | None" = None) -> "Select":
         """Return grouped status counts, optionally scoped to one queue."""
         status = self._col("status")
@@ -1389,6 +1467,28 @@ RETURNING {target}.{id_col} AS id
         columns = tuple(self._select_column(canonical) for canonical in _TASK_COLUMNS)
         return sql.select(*columns).from_(self.table_name)
 
+    def _filter_tasks(
+        self,
+        statement: "Select",
+        *,
+        statuses: "Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+    ) -> "Select":
+        if statuses is not None:
+            if not statuses:
+                statement = statement.where(f"{self._col('id')} IS NULL")
+            else:
+                statement = statement.where_in(self._col("status"), list(statuses))
+        if queue is not None:
+            statement = statement.where_eq(self._col("queue"), queue)
+        if task_name is not None:
+            statement = statement.where_eq(self._col("task_name"), task_name)
+        if key is not None:
+            statement = statement.where_eq(self._col("task_key"), key)
+        return statement
+
     def _create_table_statement(self, *, include_expiration: "bool" = True) -> "CreateTable":
         statement = (
             sql
@@ -1440,36 +1540,90 @@ RETURNING {target}.{id_col} AS id
             rendered = rendered.replace(unsplit_target, split_target, 1)
         return rendered
 
-    def _create_index_statements(self, *, include_expiration: "bool" = True) -> "list[str]":
+    def _companion_index_specs(self, *, include_expiration: "bool" = True) -> "tuple[tuple[str, str], ...]":
         pending_columns = ["status", "queue", "execution_backend", "scheduled_at"]
         if include_expiration:
             pending_columns.append("expires_at")
         pending_columns.extend(("priority", "queued_at", "created_at"))
-        return [
-            self._to_sql(
-                sql
-                .create_index(self._index_name("dispatch_repair"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns(
-                    *(self._col(c) for c in ("execution_backend", "status", "dispatch_checked_at", "created_at", "id"))
-                )
+        dispatch_repair_name = self._index_name("dispatch_repair")
+        pending_name = self._index_name("pending")
+        heartbeat_name = self._index_name("heartbeat")
+        created_name = self._index_name("created")
+        list_name = self._index_name("list")
+        oracle_dialect = self._data_dictionary_dialect_name() == "oracle"
+        created_columns: "tuple[str | exp.Ordered, ...]" = (
+            (self._col("created_at"), self._col("id"))
+            if oracle_dialect
+            else (
+                exp.Ordered(this=exp.column(self._col("created_at")), desc=True),
+                exp.Ordered(this=exp.column(self._col("id")), desc=True),
+            )
+        )
+        list_columns: "tuple[str | exp.Ordered, ...]" = (
+            (self._col("status"), self._col("queue"), self._col("created_at"), self._col("id"))
+            if oracle_dialect
+            else (
+                self._col("status"),
+                self._col("queue"),
+                exp.Ordered(this=exp.column(self._col("created_at")), desc=True),
+                exp.Ordered(this=exp.column(self._col("id")), desc=True),
+            )
+        )
+        return (
+            (
+                dispatch_repair_name,
+                self._to_sql(
+                    sql
+                    .create_index(dispatch_repair_name)
+                    .if_not_exists()
+                    .on_table(self.table_name)
+                    .columns(
+                        *(
+                            self._col(c)
+                            for c in ("execution_backend", "status", "dispatch_checked_at", "created_at", "id")
+                        )
+                    )
+                ),
             ),
-            self._to_sql(
-                sql
-                .create_index(self._index_name("pending"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns(*(self._col(canonical) for canonical in pending_columns))
+            (
+                pending_name,
+                self._to_sql(
+                    sql
+                    .create_index(pending_name)
+                    .if_not_exists()
+                    .on_table(self.table_name)
+                    .columns(*(self._col(canonical) for canonical in pending_columns))
+                ),
             ),
-            self._to_sql(
-                sql
-                .create_index(self._index_name("heartbeat"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns(*(self._col(canonical) for canonical in ("status", "heartbeat_at")))
+            (
+                heartbeat_name,
+                self._to_sql(
+                    sql
+                    .create_index(heartbeat_name)
+                    .if_not_exists()
+                    .on_table(self.table_name)
+                    .columns(*(self._col(canonical) for canonical in ("status", "heartbeat_at")))
+                ),
             ),
-        ]
+            (
+                created_name,
+                self._to_sql(
+                    sql.create_index(created_name).if_not_exists().on_table(self.table_name).columns(*created_columns)
+                ),
+            ),
+            (
+                list_name,
+                self._to_sql(
+                    sql.create_index(list_name).if_not_exists().on_table(self.table_name).columns(*list_columns)
+                ),
+            ),
+        )
+
+    def _drop_index_statement(self, suffix: "str") -> "str":
+        statement = sql.drop_index(self._index_name(suffix)).if_exists()
+        if self._data_dictionary_dialect_name() in {"mssql", "tsql"}:
+            statement = statement.on_table(self.table_name)
+        return self._to_sql(statement)
 
     def _select_column(self, canonical: "str") -> "str":
         column = self._col(canonical)
@@ -1482,7 +1636,7 @@ RETURNING {target}.{id_col} AS id
 
     def _index_name(self, suffix: "str") -> "str":
         name = f"ix_{self.table_name.replace('.', '_')}_{suffix}"
-        if suffix == "dispatch_repair" and len(name) > _MAX_REPAIR_INDEX_LENGTH:
+        if suffix in _BOUNDED_INDEX_SUFFIXES and len(name) > _MAX_REPAIR_INDEX_LENGTH:
             return f"{name[: _MAX_REPAIR_INDEX_LENGTH - 9]}_{sha256(name.encode()).hexdigest()[:8]}"
         return name
 

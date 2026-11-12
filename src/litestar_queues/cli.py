@@ -1,6 +1,7 @@
 """Public Click command facade for ``litestar queues`` CLI extensions."""
 
 from litestar_queues._cli import (
+    list_command,
     queues_group,
     register,
     run_command,
@@ -12,6 +13,7 @@ from litestar_queues._cli import (
 )
 
 __all__ = (
+    "list_command",
     "queues_group",
     "register",
     "run_command",
