@@ -2838,7 +2838,7 @@ requires-dist = [
     { name = "prometheus-client", marker = "extra == 'prometheus'" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=8.1.0" },
     { name = "sqlalchemy", marker = "extra == 'advanced-alchemy'", specifier = ">=2.0.0,<2.1.0" },
-    { name = "sqlspec", marker = "extra == 'sqlspec'", specifier = ">=0.63.0" },
+    { name = "sqlspec", marker = "extra == 'sqlspec'", git = "https://github.com/litestar-org/sqlspec.git?branch=main" },
     { name = "typing-extensions", specifier = ">=4.0.0" },
     { name = "valkey", marker = "extra == 'valkey'", specifier = ">=6.0.0" },
 ]
@@ -2857,7 +2857,7 @@ benchmark-backends = [
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2.0" },
     { name = "redis", specifier = ">=8.1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.0,<2.1.0" },
-    { name = "sqlspec", extras = ["performance"], specifier = ">=0.63.0" },
+    { name = "sqlspec", extras = ["performance"], git = "https://github.com/litestar-org/sqlspec.git?branch=main" },
     { name = "valkey", specifier = ">=6.0.0" },
 ]
 benchmark-frameworks = [
@@ -2884,7 +2884,7 @@ benchmarks = [
     { name = "rq" },
     { name = "saq" },
     { name = "sqlalchemy", specifier = ">=2.0.0,<2.1.0" },
-    { name = "sqlspec", extras = ["performance"], specifier = ">=0.63.0" },
+    { name = "sqlspec", extras = ["performance"], git = "https://github.com/litestar-org/sqlspec.git?branch=main" },
     { name = "taskiq" },
     { name = "taskiq-redis" },
     { name = "valkey", specifier = ">=6.0.0" },
@@ -2926,7 +2926,7 @@ dev = [
     { name = "ruff" },
     { name = "slotscheck" },
     { name = "sqlalchemy", specifier = ">=2.0.0,<2.1.0" },
-    { name = "sqlspec", extras = ["adbc", "aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "arrow-odbc", "cockroachdb", "pymysql", "spanner", "litestar", "mysql-connector", "pymssql", "mssql-python"], specifier = ">=0.63.0" },
+    { name = "sqlspec", extras = ["adbc", "aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "arrow-odbc", "cockroachdb", "pymysql", "spanner", "litestar", "mysql-connector", "pymssql", "mssql-python"], git = "https://github.com/litestar-org/sqlspec.git?branch=main" },
     { name = "valkey", specifier = ">=6.0.0" },
     { name = "zensical", specifier = ">=0.0.71" },
 ]
@@ -2966,7 +2966,7 @@ test-adapters = [
     { name = "pytest-databases", git = "https://github.com/litestar-org/pytest-databases.git?branch=test%2Fclientless-all" },
     { name = "redis", specifier = ">=8.1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.0,<2.1.0" },
-    { name = "sqlspec", extras = ["adbc", "aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "arrow-odbc", "cockroachdb", "pymysql", "spanner", "litestar", "mysql-connector", "pymssql", "mssql-python"], specifier = ">=0.63.0" },
+    { name = "sqlspec", extras = ["adbc", "aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "arrow-odbc", "cockroachdb", "pymysql", "spanner", "litestar", "mysql-connector", "pymssql", "mssql-python"], git = "https://github.com/litestar-org/sqlspec.git?branch=main" },
     { name = "valkey", specifier = ">=6.0.0" },
 ]
 test-core = [
@@ -3008,7 +3008,7 @@ tests = [
     { name = "pytest-xdist" },
     { name = "redis", specifier = ">=8.1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.0,<2.1.0" },
-    { name = "sqlspec", extras = ["adbc", "aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "arrow-odbc", "cockroachdb", "pymysql", "spanner", "litestar", "mysql-connector", "pymssql", "mssql-python"], specifier = ">=0.63.0" },
+    { name = "sqlspec", extras = ["adbc", "aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "arrow-odbc", "cockroachdb", "pymysql", "spanner", "litestar", "mysql-connector", "pymssql", "mssql-python"], git = "https://github.com/litestar-org/sqlspec.git?branch=main" },
     { name = "valkey", specifier = ">=6.0.0" },
 ]
 
@@ -5585,33 +5585,13 @@ wheels = [
 
 [[package]]
 name = "sqlspec"
-version = "0.70.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.72.0"
+source = { git = "https://github.com/litestar-org/sqlspec.git?branch=main#8bccac113aaf4d8b6c454bae63c42cf7b691d909" }
 dependencies = [
     { name = "mypy-extensions" },
     { name = "rich-click" },
     { name = "sqlglot" },
     { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a7/4e/a1cb5fbfd9e238e27a67dbeb32879a0ce8e52ad6dc0cce89804a9b22ba99/sqlspec-0.70.0.tar.gz", hash = "sha256:ce9f592a954c34ff7a9e0b06b149d92cb654a390f1a503b95ceb619c48830aa8", size = 4613202, upload-time = "2026-11-02T03:53:27.978Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3a/f3/c4e4ec746b0dddb361d394269409d2b27375de0ecd13515cacc9ee93d880/sqlspec-0.70.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:6089e2e5e1f1f9c8159bf8100eb1887c64533d2d009203e2549c2e261f4fb806", size = 11147597, upload-time = "2026-11-02T03:52:40.546Z" },
-    { url = "https://files.pythonhosted.org/packages/1a/97/76605e6bf504c7be9ade5a8a0f60ae3ae4a284cb997ff5b26c034e930a52/sqlspec-0.70.0-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:b92bfc3f687a568be1d266202821fa80d7578c888fc68563fdb4e4d0c0d56b5d", size = 12559290, upload-time = "2026-11-02T03:52:43.696Z" },
-    { url = "https://files.pythonhosted.org/packages/18/47/b0db1e47de00f3140032f52beae63bc77b5518346e642f757abbdcbc7008/sqlspec-0.70.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:6cb177011b5f5b4900aa8618ac10b30e9be9e97fb7bb8e56b4bc8a29fb3b6d95", size = 11668910, upload-time = "2026-11-02T03:52:46.495Z" },
-    { url = "https://files.pythonhosted.org/packages/b4/b3/a6e38402fdf3a53d47a1da2c05bd346b8f9abbb4c5bb0773f5b89086361b/sqlspec-0.70.0-cp311-cp311-win_amd64.whl", hash = "sha256:0a8eeb3d15e3805c6e3e43daf7f227be5f714ddb889587c20f4aca764be79e64", size = 9526345, upload-time = "2026-11-02T03:52:48.891Z" },
-    { url = "https://files.pythonhosted.org/packages/36/18/f12406ccb77134b8d4dc24fd97d8ad9530cd63dca24e99a67f7d8caecb66/sqlspec-0.70.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:c45d69a72b545cebbd41d0c30e765160d8ed5a6218273b9824a49dbbbdc28ce1", size = 11247131, upload-time = "2026-11-02T03:52:51.495Z" },
-    { url = "https://files.pythonhosted.org/packages/be/7b/280a13e090a9b1a4d1d2b3258b32e0f860983d30c4bffdba1d800a9b0717/sqlspec-0.70.0-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:b26a70649193e4d42169da60997be8b276278e3e86d0898805dc8327daf97ae6", size = 12795069, upload-time = "2026-11-02T03:52:54.487Z" },
-    { url = "https://files.pythonhosted.org/packages/89/49/1a8f4d45fe2efc03bc34d8a8c6ff3e7c8c99e01e1e238771fc6ca10004b3/sqlspec-0.70.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:6bfc8896fc0e960928c15b08efe03e420553202f22c0363746f002ac3aaa8cb1", size = 11774783, upload-time = "2026-11-02T03:52:57.126Z" },
-    { url = "https://files.pythonhosted.org/packages/f5/77/427eb5dd0f1dfd79bb9277c411fafb1583bfc96a644b462a31349a490da7/sqlspec-0.70.0-cp312-cp312-win_amd64.whl", hash = "sha256:be4e7ab8e81132feb624445b0e716fd46fd4694575e8ae33e80ac73b3502128f", size = 9594933, upload-time = "2026-11-02T03:52:59.803Z" },
-    { url = "https://files.pythonhosted.org/packages/c5/16/a95d4d675909e88ee75920b80222994fbf64c0737848db508922d646bb11/sqlspec-0.70.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:bda3a2ac1c82b14ead7f5c3572dd4f96c2bba90a65ce769395f31fc7a8e5b1dc", size = 11234949, upload-time = "2026-11-02T03:53:02.756Z" },
-    { url = "https://files.pythonhosted.org/packages/ac/02/6b1805ffe8960013c008010347bbd445af64d85809d415bc001467324ff0/sqlspec-0.70.0-cp313-cp313-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:739fac832241b5e730b4c43387c50bb807ffcd9724a12b623fb02c4082ea3615", size = 12851084, upload-time = "2026-11-02T03:53:05.558Z" },
-    { url = "https://files.pythonhosted.org/packages/9f/25/3e238a1765c8f87a70a5b0fd9c806508e75c46f9336766dba3908bd022d2/sqlspec-0.70.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3149165ee49568ede9ecf0b7d34f9c0388c6ebee32fe2e62aadf58de18dae1c9", size = 11850671, upload-time = "2026-11-02T03:53:08.779Z" },
-    { url = "https://files.pythonhosted.org/packages/57/6c/c2b1b36bbe6df742d1bee54562f880049efd99f02b1b78257978fcbd2068/sqlspec-0.70.0-cp313-cp313-win_amd64.whl", hash = "sha256:6266d00d0853ec394efde9a8afbdab5301a47fb0e62873861639851981d58727", size = 9609266, upload-time = "2026-11-02T03:53:11.611Z" },
-    { url = "https://files.pythonhosted.org/packages/ff/b0/0537ce385fa18235423fda16bec4e5f69c7d371db7254cb9fd049efc412c/sqlspec-0.70.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:8eac55ac9e5963247d778479f1e1fa3cd0c4ec2d0b55985ec666d9ddb07c0e8a", size = 11217997, upload-time = "2026-11-02T03:53:14.447Z" },
-    { url = "https://files.pythonhosted.org/packages/99/f6/3b9517146934bb98f886c38b49caaf5ebb8311a3fa4f2a7868f24ec3c5bf/sqlspec-0.70.0-cp314-cp314-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:a70ba5da2aab5e5f7d13ff8b2bbf5b1930addd4854f5f4a4538299ed1627f917", size = 12803206, upload-time = "2026-11-02T03:53:17.451Z" },
-    { url = "https://files.pythonhosted.org/packages/8b/31/b7ce70a1f26edad57fb5e6e432117972d3a1b60f070abeffaa921af0c8a4/sqlspec-0.70.0-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a2db3e093a77deb972618ff76ec813672c0e51e96f142e64dce606aaf139e7d8", size = 11859421, upload-time = "2026-11-02T03:53:20.588Z" },
-    { url = "https://files.pythonhosted.org/packages/1b/3c/2406cb12e62b807495f2cdf3e14bd1ce0a1273d8e32f290e17ac1590dd5b/sqlspec-0.70.0-cp314-cp314-win_amd64.whl", hash = "sha256:bc16f49950f9dcb61c0e55ee78a6e69e758a344e1a32221acd99b1c9a6876401", size = 9763122, upload-time = "2026-11-02T03:53:23.632Z" },
-    { url = "https://files.pythonhosted.org/packages/8e/78/ae0a622ecf6c7b94b2ddc8f8254af707402c1f23ce5ae11bca8f5afa399f/sqlspec-0.70.0-py3-none-any.whl", hash = "sha256:9f83878ed1c1b3bb53f9c3f4c61fb89369b9347dbd7061ab79fd15534e47f6be", size = 2129804, upload-time = "2026-11-02T03:53:26.065Z" },
 ]
 
 [package.optional-dependencies]
