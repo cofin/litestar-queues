@@ -6,6 +6,7 @@ because ``CliRunner`` cannot deliver real signals.
 
 import json
 import os
+import re
 import sys
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, cast
@@ -898,12 +899,16 @@ def test_queues_list_json_handles_unserializable_task_payloads(monkeypatch: "pyt
     assert {"args", "kwargs", "result", "metadata"}.isdisjoint(payload["items"][0])
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
 def test_queues_list_rejects_ephemeral_backend(monkeypatch: "pytest.MonkeyPatch") -> "None":
     app = Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend="ephemeral"))])
 
     result = _invoke_litestar_app(app, ["queues", "list"], monkeypatch)
 
-    normalized_output = " ".join(result.output.replace("│", " ").split())
+    plain_output = _ANSI_ESCAPE_RE.sub("", result.output)
+    normalized_output = " ".join(plain_output.replace("│", " ").split())
     assert result.exit_code != 0
     assert "ephemeral" in normalized_output.lower()
     assert "litestar queues list" in normalized_output

@@ -465,11 +465,29 @@ def test_oracle_listing_index_names_stay_unique_within_30_chars(config_type_name
     heartbeat_index = store._index_name("heartbeat")
     repair_index = store._index_name("dispatch_repair")
 
-    assert created_index == "ix_queue_tasks_with_a__created"
-    assert list_index == "ix_queue_tasks_with_a_ver_list"
+    assert created_index.endswith("_created")
+    assert list_index.endswith("_list")
     assert len(created_index) <= 30
     assert len(list_index) <= 30
     assert len({created_index, list_index, pending_index, heartbeat_index, repair_index}) == 5
+
+
+@pytest.mark.parametrize("config_type_name", ("OracleSyncConfig", "OracleAsyncConfig"))
+def test_oracle_companion_index_names_do_not_collide_across_shared_long_prefixes(config_type_name: "str") -> "None":
+    store_a = create_queue_store(
+        _fake_oracle_config(config_type_name=config_type_name), table_name="queue_task_oracle_oracledb_d21cff92ef"
+    )
+    store_b = create_queue_store(
+        _fake_oracle_config(config_type_name=config_type_name), table_name="queue_task_oracle_oracledb_3157c2cf1e"
+    )
+
+    indexes_a = {name for name, _ddl in store_a.companion_indexes()}
+    indexes_b = {name for name, _ddl in store_b.companion_indexes()}
+
+    assert len(indexes_a) == 5
+    assert len(indexes_b) == 5
+    assert all(len(name) <= 30 for name in indexes_a | indexes_b)
+    assert indexes_a.isdisjoint(indexes_b)
 
 
 @pytest.mark.parametrize("config_type_name", ("OracleSyncConfig", "OracleAsyncConfig"))

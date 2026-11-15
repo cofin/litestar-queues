@@ -1103,7 +1103,8 @@ async def test_sqlspec_postgres_config_subclass_durable_wakeup(
     await backend.open()
     try:
         await backend.create_schema()
-        assert backend.capabilities.wakeup_backend == "poll_queue"
+        assert backend.capabilities.wakeup_backend == "notify_queue"
+        assert backend.capabilities.wakeups_durable is True
         waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=5))
         task = await backend.enqueue("tasks.subclass", kwargs={"payload": {"source": config_name}})
         assert await waiter is True

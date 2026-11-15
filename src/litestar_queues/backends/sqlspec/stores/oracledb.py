@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from hashlib import sha256
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
@@ -137,6 +138,7 @@ class _OracledbQueueStore(SQLSpecQueueStore):
         return [
             _drop_index_block(self, "list"),
             _drop_index_block(self, "created"),
+            _drop_index_block(self, "dispatch_repair"),
             _drop_index_block(self, "heartbeat"),
             _drop_index_block(self, "pending"),
             _drop_table_block(self),
@@ -390,10 +392,19 @@ def _index_name(store: "SQLSpecQueueStore", suffix: "str") -> "str":
     suffix_text = f"_{suffix}"
     prefix = "ix_"
     table_name = store.table_name.replace(".", "_")
+    full_name = f"{prefix}{table_name}{suffix_text}"
+    if len(full_name) <= _ORACLE_IDENTIFIER_MAX_LENGTH:
+        return full_name
+    digest = sha256(full_name.encode("utf-8")).hexdigest()[:8]
     table_budget = _ORACLE_IDENTIFIER_MAX_LENGTH - len(prefix) - len(suffix_text)
     if table_budget < 1:
-        return f"{prefix}{suffix_text.lstrip('_')}"[:_ORACLE_IDENTIFIER_MAX_LENGTH]
-    return f"{prefix}{table_name[:table_budget]}{suffix_text}"
+        head_budget = _ORACLE_IDENTIFIER_MAX_LENGTH - len(prefix) - len(digest) - 1
+        head = suffix_text.lstrip("_")[: max(0, head_budget)]
+        return f"{prefix}{head}_{digest}"[:_ORACLE_IDENTIFIER_MAX_LENGTH]
+    if table_budget >= len(digest) + 2:
+        prefix_budget = table_budget - len(digest) - 1
+        return f"{prefix}{table_name[:prefix_budget]}_{digest}{suffix_text}"
+    return f"{prefix}{digest[:table_budget]}{suffix_text}"
 
 
 def _create_table_block(
