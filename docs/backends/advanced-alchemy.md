@@ -1,6 +1,6 @@
 # Advanced Alchemy Storage Backend
 
-The Advanced Alchemy backend ([`SQLAlchemyBackend`](../reference/backends.md#litestar_queues.backends.advanced_alchemy.SQLAlchemyBackend), configured via [`SQLAlchemyBackendConfig`](../reference/backends.md#litestar_queues.backends.advanced_alchemy.SQLAlchemyBackendConfig)) integrates task queues directly with SQLAlchemy 2.0 async sessions and Alembic migration workflows.
+The Advanced Alchemy backend ([`SQLAlchemyBackend`](../reference/backends.md#litestar_queues.backends.advanced_alchemy.SQLAlchemyBackend), configured via [`SQLAlchemyBackendConfig`](../reference/backends.md#litestar_queues.backends.advanced_alchemy.SQLAlchemyBackendConfig)) integrates task queues directly with SQLAlchemy 2.0+ async sessions and Alembic migration workflows.
 
 ## Runnable Example
 

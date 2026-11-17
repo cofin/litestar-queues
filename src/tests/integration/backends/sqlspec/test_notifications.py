@@ -259,13 +259,13 @@ def _txeventq_queue(oracle_service: "OracleService") -> "Iterator[None]":
 
 @pytest.fixture(scope="session")
 def oracle_aq_privileges(request: "FixtureRequest") -> "None":
-    """Grant the app user Oracle AQ privileges when the 23ai fixture is available."""
+    """Grant the app user Oracle AQ privileges when the 26ai fixture is available."""
 
     pytest.importorskip("oracledb")
     try:
-        oracle_service = cast("OracleService", request.getfixturevalue("oracle_23ai_service"))
+        oracle_service = cast("OracleService", request.getfixturevalue("oracle_26ai_service"))
     except pytest.FixtureLookupError:
-        pytest.skip("Oracle 23ai fixture is not available")
+        pytest.skip("Oracle 26ai fixture is not available")
     system_password = getattr(oracle_service, "system_password", None)
     if system_password is None:
         pytest.skip("Oracle service fixture does not expose a system password for AQ grants")
@@ -731,7 +731,7 @@ async def test_sqlspec_backend_oracle_event_transports_wake_waiters(
     """Oracle AQ and TxEventQ wake ``wait_for_wakeups`` through SQLSpec events."""
 
     pytest.importorskip("oracledb")
-    oracle_service = cast("OracleService", request.getfixturevalue("oracle_23ai_service"))
+    oracle_service = cast("OracleService", request.getfixturevalue("oracle_26ai_service"))
     request.getfixturevalue("oracle_aq_privileges")
 
     queue_manager = _classic_aq_queue(oracle_service) if event_backend == "aq" else _txeventq_queue(oracle_service)

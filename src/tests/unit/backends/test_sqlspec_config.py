@@ -1,4 +1,5 @@
 import inspect
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, get_args
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 pytest.importorskip("sqlspec")
 
 from litestar import Litestar
+from sqlspec import ReplicaSpec, SQLSpec
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues import QueueConfig, QueuePlugin
@@ -23,6 +25,12 @@ from litestar_queues.backends.sqlspec.extension import (
 )
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueuedTaskRecord
+
+_AsyncpgConfig: Any
+try:
+    from sqlspec.adapters.asyncpg import AsyncpgConfig as _AsyncpgConfig
+except ImportError:
+    _AsyncpgConfig = None
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -795,3 +803,71 @@ def test_sqlspec_backend_config_manage_schema_false_removes_both_in_both_modes(m
     assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
     assert "events" not in (sqlspec_config.extension_config or {})
     assert QUEUE_EXTENSION_NAME not in (sqlspec_config.extension_config or {})
+
+
+def _build_rejected_pool_config(kind: str) -> Any:
+    if kind == "replica":
+        primary = AiosqliteConfig(
+            connection_config={"database": ":memory:"},
+            replicas=[ReplicaSpec(config=AiosqliteConfig(connection_config={"database": ":memory:"}))],
+        )
+        return primary.replica_groups["default"].configs[0]
+    if _AsyncpgConfig is not None:
+        return _AsyncpgConfig(
+            connection_config={"dsn": "postgresql://localhost/app"}, driver_features={"tenant_strategy": "rls"}
+        )
+    return SimpleNamespace(driver_features={"tenant_strategy": "rls"})
+
+
+def test_sqlspec_backend_config_accepts_primary_config_with_attached_replicas() -> None:
+    """Primary read-write configurations owning replica groups remain valid for queue storage."""
+    primary = AiosqliteConfig(
+        connection_config={"database": ":memory:"},
+        replicas=[ReplicaSpec(config=AiosqliteConfig(connection_config={"database": ":memory:"}))],
+    )
+    assert primary.has_replicas is True
+    assert primary.is_replica is False
+
+    backend_config = SQLSpecBackendConfig(sqlspec_config=primary)
+    assert backend_config.sqlspec_config is primary
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_match"), [("replica", "read-replica SQLSpec configuration"), ("tenant", "tenant_strategy")]
+)
+@pytest.mark.parametrize("field_name", ["sqlspec_config", "heartbeat_pool_config"])
+def test_sqlspec_backend_config_rejects_replica_and_tenant_pools(
+    kind: str, expected_match: str, field_name: str
+) -> None:
+    """SQLSpecBackendConfig rejects derived read-replica and tenant_strategy pools on both config slots."""
+    bad_pool = _build_rejected_pool_config(kind)
+    valid_primary = AiosqliteConfig(connection_config={"database": ":memory:"})
+    kwargs: dict[str, Any] = (
+        {"sqlspec_config": bad_pool}
+        if field_name == "sqlspec_config"
+        else {"sqlspec_config": valid_primary, "heartbeat_pool_config": bad_pool}
+    )
+
+    with pytest.raises(QueueConfigurationError, match=expected_match):
+        SQLSpecBackendConfig(**kwargs)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("kind", "expected_match"), [("replica", "read-replica SQLSpec configuration"), ("tenant", "tenant_strategy")]
+)
+async def test_sqlspec_manager_single_config_resolution_rejects_replica_and_tenant_pools(
+    kind: str, expected_match: str
+) -> None:
+    """Single-config SQLSpec manager resolution rejects derived replica and tenant_strategy pools."""
+    bad_pool = _build_rejected_pool_config(kind)
+    manager = SQLSpec()
+    manager.add_config(bad_pool)
+    backend_config = SQLSpecBackendConfig(sqlspec=manager)
+
+    with pytest.raises(QueueConfigurationError, match=expected_match):
+        backend_config.configure_migrations(QueueConfig(queue_backend=backend_config))
+
+    backend = SQLSpecQueueBackend(backend_config=backend_config)
+    with pytest.raises(QueueConfigurationError, match=expected_match):
+        await backend.open()

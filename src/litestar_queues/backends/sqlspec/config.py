@@ -12,6 +12,7 @@ from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
     resolve_column_map,
     validate_native_json_columns,
+    validate_queue_sqlspec_config,
     validate_table_name,
 )
 from litestar_queues.events import EventHistoryExtraColumn, validate_event_history_extra_columns
@@ -144,6 +145,12 @@ class SQLSpecBackendConfig:
 
     def __post_init__(self) -> "None":
         """Validate adopter-owned table and wakeup-transport configuration."""
+        if self.sqlspec_config is not None:
+            validate_queue_sqlspec_config(self.sqlspec_config, parameter_name="SQLSpecBackendConfig.sqlspec_config")
+        if self.heartbeat_pool_config is not None:
+            validate_queue_sqlspec_config(
+                self.heartbeat_pool_config, parameter_name="SQLSpecBackendConfig.heartbeat_pool_config"
+            )
         if self.queue_table_name is not None:
             self.queue_table_name = validate_table_name(self.queue_table_name)
         if self.event_history_table_name is not None:
@@ -173,6 +180,7 @@ class SQLSpecBackendConfig:
             registered_configs = tuple(self.sqlspec.configs.values())
             if len(registered_configs) == 1:
                 sqlspec_config = registered_configs[0]
+                validate_queue_sqlspec_config(sqlspec_config, parameter_name="SQLSpecBackendConfig.sqlspec")
         if sqlspec_config is None:
             return
 

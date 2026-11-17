@@ -15,7 +15,7 @@ import pytest
 pytest.importorskip("sqlspec")
 
 from click import Group
-from sqlspec import SQLSpec
+from sqlspec import ReplicaSpec, SQLSpec
 from sqlspec.adapters.sqlite import SqliteConfig
 from sqlspec.exceptions import MigrationError
 from sqlspec.migrations.context import MigrationContext
@@ -1906,13 +1906,37 @@ async def test_reconcile_supports_third_party_queue_store_class(tmp_path: "Path"
         await config.close_pool()
 
 
+_FAKE_UNSUPPORTED_RECONCILE_SPECS: "dict[str, tuple[str, str, str | None]]" = {
+    "db2": ("db2", "db2", None),
+    "snowflake": ("snowflake", "snowflake", None),
+    "teradata": ("teradata", "teradata", None),
+    "arrow_odbc_db2": ("arrow_odbc", "db2", "ArrowOdbcConfig"),
+    "arrow_odbc_postgres": ("arrow_odbc", "postgres", "ArrowOdbcConfig"),
+}
+
+
 def _unsupported_reconcile_config(case_id: "str") -> "Any":
+    if case_id in _FAKE_UNSUPPORTED_RECONCILE_SPECS:
+        adapter, dialect, config_type_name = _FAKE_UNSUPPORTED_RECONCILE_SPECS[case_id]
+        return _fake_adapter_config(adapter, dialect=dialect, config_type_name=config_type_name)
     if case_id == "spanner":
         if _SpannerSyncConfig is not None:
             return _SpannerSyncConfig(connection_config={"project": "demo", "instance_id": "inst", "database_id": "db"})
         return _fake_adapter_config("spanner", dialect="spanner")
-    if case_id == "db2":
-        return _fake_adapter_config("db2", dialect="db2")
+    if case_id == "replica_sqlite":
+        primary = SqliteConfig(
+            connection_config={"database": ":memory:"},
+            replicas=[ReplicaSpec(config=SqliteConfig(connection_config={"database": ":memory:"}))],
+        )
+        return primary.replica_groups["default"].configs[0]
+    if case_id == "tenant_postgres":
+        if _AsyncpgConfig is not None:
+            return _AsyncpgConfig(
+                connection_config={"dsn": "postgresql://localhost/app"}, driver_features={"tenant_strategy": "rls"}
+            )
+        tenant_cfg = _fake_adapter_config("asyncpg", dialect="postgres", is_async=True)
+        tenant_cfg.driver_features = {"tenant_strategy": "rls"}
+        return tenant_cfg
     if case_id == "adbc_flightsql":
         if _AdbcConfig is not None:
             return _AdbcConfig(connection_config={"driver_name": "adbc_driver_flightsql"})
@@ -1930,21 +1954,29 @@ def _unsupported_reconcile_config(case_id: "str") -> "Any":
             config_type_name="AdbcConfig",
             connection_config={"driver_name": "adbc_driver_postgresql"},
         )
-    if case_id == "adbc_duckdb":
-        if _AdbcConfig is not None:
-            return _AdbcConfig(connection_config={"driver_name": "duckdb"})
-        return _fake_adapter_config(
-            "adbc", dialect="duckdb", config_type_name="AdbcConfig", connection_config={"driver_name": "duckdb"}
-        )
-    if case_id == "arrow_odbc_db2":
-        return _fake_adapter_config("arrow_odbc", dialect="db2", config_type_name="ArrowOdbcConfig")
-    return _fake_adapter_config("arrow_odbc", dialect="postgres", config_type_name="ArrowOdbcConfig")
+    if _AdbcConfig is not None:
+        return _AdbcConfig(connection_config={"driver_name": "duckdb"})
+    return _fake_adapter_config(
+        "adbc", dialect="duckdb", config_type_name="AdbcConfig", connection_config={"driver_name": "duckdb"}
+    )
 
 
-@pytest.mark.parametrize("action", ["reconcile", "downgrade"])
+@pytest.mark.parametrize("action", ["reconcile", "downgrade", "reconcile_stores_sync", "reconcile_stores_async"])
 @pytest.mark.parametrize(
     "case_id",
-    ["spanner", "db2", "adbc_flightsql", "adbc_postgresql", "adbc_duckdb", "arrow_odbc_db2", "arrow_odbc_postgres"],
+    [
+        "spanner",
+        "db2",
+        "snowflake",
+        "teradata",
+        "replica_sqlite",
+        "tenant_postgres",
+        "adbc_flightsql",
+        "adbc_postgresql",
+        "adbc_duckdb",
+        "arrow_odbc_db2",
+        "arrow_odbc_postgres",
+    ],
 )
 async def test_reconcile_and_downgrade_refuse_unsupported_adapters(action: "str", case_id: "str") -> "None":
     config = _unsupported_reconcile_config(case_id)
@@ -1954,7 +1986,13 @@ async def test_reconcile_and_downgrade_refuse_unsupported_adapters(action: "str"
     context = cast(
         "MigrationContext", SimpleNamespace(config=config, driver=driver, is_async_driver=False, extension_config={})
     )
-    target_fn = reconcile if action == "reconcile" else downgrade
 
     with pytest.raises(MigrationError):
-        target_fn(context)
+        if action == "reconcile":
+            reconcile(context)
+        elif action == "downgrade":
+            downgrade(context)
+        elif action == "reconcile_stores_sync":
+            reconcile_stores_sync(driver, (), config=config, validate_adapter=True)
+        else:
+            await reconcile_stores_async(driver, (), config=config, validate_adapter=True)

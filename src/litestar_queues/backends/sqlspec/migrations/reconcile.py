@@ -12,7 +12,11 @@ from litestar_queues.backends.sqlspec.event_log import create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.maintenance import create_maintenance_store
 from litestar_queues.backends.sqlspec.reservation import create_task_reservation_store
-from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, validate_table_name
+from litestar_queues.backends.sqlspec.schema import (
+    DEFAULT_TABLE_NAME,
+    validate_queue_sqlspec_config,
+    validate_table_name,
+)
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 from litestar_queues.events import EventHistoryExtraColumn
@@ -197,6 +201,11 @@ def _explicit_queue_store_class(config: "Any") -> "type[SQLSpecQueueStore] | Non
 
 
 def _validate_reconcile_adapter(config: "Any") -> "None":
+    if config is not None:
+        try:
+            validate_queue_sqlspec_config(config)
+        except QueueConfigurationError as exc:
+            raise MigrationError(str(exc)) from exc
     if _explicit_queue_store_class(config) is not None:
         return
     adapter = _adapter_name(config)
@@ -205,6 +214,8 @@ def _validate_reconcile_adapter(config: "Any") -> "None":
         raise MigrationError(msg)
     try:
         validate_builtin_reconcile_adapter(config)
+        if config is not None:
+            create_queue_store(cast("Any", config))
     except MigrationError:
         raise
     except (QueueConfigurationError, SQLSpecError, ValueError, TypeError) as exc:

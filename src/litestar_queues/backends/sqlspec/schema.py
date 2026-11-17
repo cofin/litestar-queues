@@ -1,16 +1,13 @@
 """Schema and migration helpers for the SQLSpec queue backend."""
 
+from collections.abc import Mapping
 from hashlib import sha1
 from importlib.resources import files
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from sqlspec.utils.text import quote_identifier, split_qualified_identifier
 
 from litestar_queues.exceptions import QueueConfigurationError
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 __all__ = (
     "DEFAULT_COLUMN_MAP",
@@ -26,6 +23,7 @@ __all__ = (
     "task_reservation_table_name_for",
     "validate_column_map",
     "validate_native_json_columns",
+    "validate_queue_sqlspec_config",
     "validate_table_name",
 )
 
@@ -171,6 +169,32 @@ def validate_native_json_columns(columns: "frozenset[str]") -> "frozenset[str]":
         msg = f"native_json_columns contains non-JSON canonical names: {sorted(unknown)!r}"
         raise QueueConfigurationError(msg)
     return columns
+
+
+def validate_queue_sqlspec_config(sqlspec_config: "object", *, parameter_name: "str" = "sqlspec_config") -> "None":
+    """Validate that a SQLSpec configuration uses an unscoped primary pool.
+
+    Queue operations, worker heartbeats, maintenance sweeps, and schema
+    reconciliation require read-write access outside request-scoped tenant
+    contexts.
+
+    Raises:
+        QueueConfigurationError: If ``sqlspec_config`` is a derived read-replica
+            configuration or enables ``driver_features['tenant_strategy']``.
+    """
+    if getattr(sqlspec_config, "is_replica", False) is True or getattr(sqlspec_config, "_is_replica", False) is True:
+        msg = (
+            f"{parameter_name} cannot use a read-replica SQLSpec configuration; "
+            "pass the primary read-write configuration instead."
+        )
+        raise QueueConfigurationError(msg)
+    driver_features = getattr(sqlspec_config, "driver_features", None)
+    if isinstance(driver_features, Mapping) and driver_features.get("tenant_strategy") not in (None, False):
+        msg = (
+            f"{parameter_name} cannot use a SQLSpec configuration with driver_features['tenant_strategy'] enabled; "
+            "pass a dedicated administrative primary configuration without tenant_strategy for queue operations."
+        )
+        raise QueueConfigurationError(msg)
 
 
 def event_history_table_name_for(table_name: "str") -> "str":

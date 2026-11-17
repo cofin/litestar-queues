@@ -48,6 +48,7 @@ from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
     resolve_column_map,
     validate_native_json_columns,
+    validate_queue_sqlspec_config,
     validate_table_name,
 )
 from litestar_queues.backends.sqlspec.stores.base import _adapter_name
@@ -2469,6 +2470,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if self._sqlspec_config is None:
             registered_configs = tuple(cast("dict[int, SQLSpecConfig]", self._get_or_create_sqlspec().configs).values())
             if len(registered_configs) == 1:
+                validate_queue_sqlspec_config(registered_configs[0], parameter_name="SQLSpecBackendConfig.sqlspec")
                 self._sqlspec_config = registered_configs[0]
             elif len(registered_configs) > 1:
                 msg = (
@@ -2478,6 +2480,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise QueueConfigurationError(msg)
             else:
                 self._sqlspec_config = self._default_sqlspec_config()
+        else:
+            validate_queue_sqlspec_config(self._sqlspec_config, parameter_name="SQLSpecBackendConfig.sqlspec_config")
         return cast("SQLSpecConfig", self._sqlspec_config)
 
     def _resolve_rows_affected(self, result: "Any") -> "int":
@@ -2636,6 +2640,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             and self._heartbeat_pool_config is not None
             and not self._heartbeat_pool_registered
         ):
+            validate_queue_sqlspec_config(
+                self._heartbeat_pool_config, parameter_name="SQLSpecBackendConfig.heartbeat_pool_config"
+            )
             try:
                 cast("Any", self._get_or_create_sqlspec()).add_config(self._heartbeat_pool_config)
             except Exception:
