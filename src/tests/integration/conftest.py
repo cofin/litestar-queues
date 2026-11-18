@@ -41,7 +41,8 @@ def pytest_configure(config: "pytest.Config") -> "None":
     """Dynamically register pytest-databases container plugins and tune SDK shutdown polling."""
     for plugin in _DATABASE_PLUGINS:
         if not config.pluginmanager.has_plugin(plugin):
-            config.pluginmanager.import_plugin(plugin)
+            with suppress(ImportError, pytest.UsageError):
+                config.pluginmanager.import_plugin(plugin)
     for module_name in _SPANNER_SESSION_MANAGER_MODULES:
         with suppress(ImportError):
             module = import_module(module_name)
@@ -82,8 +83,14 @@ async def queue_backend(request: "pytest.FixtureRequest", tmp_path: "Path") -> "
         if hasattr(backend, "create_schema"):
             await backend.create_schema()
     except Exception as exc:
+        with suppress(Exception):
+            await backend.close()
         if _is_missing_arrow_odbc_sql_server_driver(case, exc):
             pytest.skip("arrow-odbc-mssql requires ODBC Driver 18 for SQL Server")
+        raise
+    except BaseException:
+        with suppress(Exception):
+            await backend.close()
         raise
     try:
         yield backend

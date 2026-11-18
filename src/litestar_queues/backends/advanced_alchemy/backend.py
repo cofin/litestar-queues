@@ -29,9 +29,9 @@ from litestar_queues.backends.advanced_alchemy.service import (
     QueueTaskReservationService,
     QueueTaskService,
 )
-from litestar_queues.backends.base import BaseQueueBackend, DispatchRepairCandidates
+from litestar_queues.backends.base import BaseQueueBackend, DispatchRepairCandidates, normalize_task_list_query
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilities, TaskReservation
+from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilities, TaskListPage, TaskReservation
 from litestar_queues.observability import create_observability_runtime
 
 if TYPE_CHECKING:
@@ -49,6 +49,7 @@ if TYPE_CHECKING:
         QueueStatistics,
         StaleTaskRecoveryResult,
         TaskRequest,
+        TaskStatus,
     )
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
@@ -254,6 +255,32 @@ class SQLAlchemyBackend(BaseQueueBackend):
         """Return a queued task record by deduplication key."""
         async with self._service() as service:
             return await service.get_task_by_key(key)
+
+    async def list_tasks(
+        self,
+        *,
+        status: "TaskStatus | Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+        limit: "int" = 50,
+        offset: "int" = 0,
+    ) -> "TaskListPage":
+        """Return a paginated slice of queued tasks ordered newest first.
+
+        Raises:
+            QueueConfigurationError: If ``status``, ``limit``, or ``offset`` is invalid.
+
+        Returns:
+            A ``TaskListPage`` slice and total match count.
+        """
+        statuses, resolved_limit, resolved_offset = normalize_task_list_query(status=status, limit=limit, offset=offset)
+        if statuses == ():
+            return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=0)
+        async with self._service() as service:
+            return await service.list_tasks(
+                status=statuses, queue=queue, task_name=task_name, key=key, limit=resolved_limit, offset=resolved_offset
+            )
 
     async def list_pending(
         self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None

@@ -20,7 +20,11 @@ from litestar_queues._correlation import (
     reset_correlation_id,
 )
 from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
-from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX, interruption_count
+from litestar_queues.backends.base import (
+    EXTERNAL_DISPATCH_RESERVATION_PREFIX,
+    interruption_count,
+    normalize_task_list_query,
+)
 from litestar_queues.config import execution_backend_name, queue_backend_name
 from litestar_queues.events._history_buffer import _in_event_release_callback
 from litestar_queues.events.context import TaskExecutionContext, bind_task_context
@@ -35,7 +39,7 @@ from litestar_queues.exceptions import (
     QueueDispatchRepairError,
 )
 from litestar_queues.execution.base import DispatchRepairResult, ExecutionCancelResult, ExternalReconciliationResult
-from litestar_queues.models import ScheduleAssertionResult
+from litestar_queues.models import ScheduleAssertionResult, TaskListPage
 from litestar_queues.task import (
     ScheduleConfig,
     Task,
@@ -47,7 +51,7 @@ from litestar_queues.task import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from types import TracebackType
     from uuid import UUID
 
@@ -55,7 +59,13 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import QueueEventLog, QueueEventPublisher
     from litestar_queues.execution import BaseExecutionBackend
-    from litestar_queues.models import QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult, TaskReservation
+    from litestar_queues.models import (
+        QueuedTaskRecord,
+        QueueStatistics,
+        StaleTaskRecoveryResult,
+        TaskReservation,
+        TaskStatus,
+    )
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = ("QueueService",)
@@ -690,6 +700,28 @@ class QueueService:
     async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
         """Return global or queue-scoped task status counts."""
         return await self.get_queue_backend().get_statistics(queue=queue)
+
+    async def list_tasks(
+        self,
+        *,
+        status: "TaskStatus | Sequence[TaskStatus] | None" = None,
+        queue: "str | None" = None,
+        task_name: "str | None" = None,
+        key: "str | None" = None,
+        limit: "int" = 50,
+        offset: "int" = 0,
+    ) -> "TaskListPage":
+        """Return a paginated, newest-first slice of queued task records.
+
+        Raises:
+            QueueConfigurationError: If ``status``, ``limit``, or ``offset`` is invalid.
+        """
+        statuses, resolved_limit, resolved_offset = normalize_task_list_query(status=status, limit=limit, offset=offset)
+        if statuses == ():
+            return TaskListPage(items=[], limit=resolved_limit, offset=resolved_offset, total=0)
+        return await self.get_queue_backend().list_tasks(
+            status=statuses, queue=queue, task_name=task_name, key=key, limit=resolved_limit, offset=resolved_offset
+        )
 
     async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
         """Cancel one queued task and publish its terminal lifecycle event.

@@ -3,7 +3,7 @@ import builtins
 import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -11,10 +11,10 @@ from litestar_queues import HeartbeatTouch, TaskRequest
 from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 from litestar_queues.backends.valkey import ValkeyBackendConfig
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import QueuedTaskRecord
+from litestar_queues.models import QueuedTaskRecord, TaskListPage, TaskStatus
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
 pytestmark = pytest.mark.anyio
 
@@ -292,23 +292,318 @@ async def test_redis_rebuild_maintenance_indexes_populates_terminal_meta() -> "N
     }
 
 
+def _seed_listing_tasks(
+    client: "_CountingRedisClient",
+    backend: "RedisQueueBackend",
+    records: "Sequence[QueuedTaskRecord]",
+    *,
+    drop_created_score: "bool" = False,
+) -> "None":
+    for record in records:
+        task_id = str(record.id)
+        mapping = backend._record_to_mapping(record)
+        if drop_created_score:
+            mapping.pop("created_score", None)
+        client.hashes[backend._task_key(record.id)] = mapping
+        client.sets.setdefault(backend._tasks_key, set()).add(task_id)
+        client.sets.setdefault(backend._status_key(record.status), set()).add(task_id)
+        client.sets.setdefault(backend._queue_index_key(record.queue), set()).add(task_id)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [{"limit": 0}, {"limit": True}, {"offset": -1}, {"offset": False}, {"status": "bogus"}, {"status": b"pending"}],
+)
+async def test_redis_list_tasks_validates_query_before_opening_client(
+    monkeypatch: "pytest.MonkeyPatch", query: "dict[str, Any]"
+) -> "None":
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(url="redis://unused:6379/0"))
+
+    async def fail_get_client(_self: "RedisQueueBackend") -> "Any":
+        msg = "_get_client must not be called for invalid list_tasks queries"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(RedisQueueBackend, "_get_client", fail_get_client)
+
+    with pytest.raises(QueueConfigurationError):
+        await backend.list_tasks(**query)
+
+
+@pytest.mark.parametrize("empty_status", [(), []])
+async def test_redis_list_tasks_empty_status_short_circuits_before_opening_client(
+    monkeypatch: "pytest.MonkeyPatch", empty_status: "Sequence[TaskStatus]"
+) -> "None":
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(url="redis://unused:6379/0"))
+
+    async def fail_get_client(_self: "RedisQueueBackend") -> "Any":
+        msg = "_get_client must not be called for empty status filter"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(RedisQueueBackend, "_get_client", fail_get_client)
+
+    page = await backend.list_tasks(status=empty_status, limit=10, offset=2)
+
+    assert page == TaskListPage(items=[], limit=10, offset=2, total=0)
+    assert page.has_more is False
+
+
+async def test_redis_list_tasks_intersects_sets_orders_desc_and_hydrates_page_only() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client)))
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    t1 = QueuedTaskRecord(
+        task_name="tasks.email", status="completed", queue="emails", key="dup-k", created_at=base + timedelta(seconds=1)
+    )
+    t2 = QueuedTaskRecord(
+        task_name="tasks.email", status="failed", queue="emails", key="dup-k", created_at=base + timedelta(seconds=2)
+    )
+    t3 = QueuedTaskRecord(
+        task_name="tasks.other", status="completed", queue="emails", key=None, created_at=base + timedelta(seconds=3)
+    )
+    t4 = QueuedTaskRecord(
+        task_name="tasks.email", status="pending", queue="emails", key=None, created_at=base + timedelta(seconds=4)
+    )
+    t5 = QueuedTaskRecord(
+        task_name="tasks.email",
+        status="completed",
+        queue="reports",
+        key="dup-k",
+        created_at=base + timedelta(seconds=5),
+    )
+    _seed_listing_tasks(client, backend, (t1, t2, t3, t4, t5))
+
+    page = await backend.list_tasks(status=("completed", "failed"), queue="emails", limit=2, offset=1)
+
+    assert page.total == 3
+    assert [item.id for item in page.items] == [t2.id, t1.id]
+    assert page.limit == 2
+    assert page.offset == 1
+    assert page.has_more is False
+    assert len(client.pipeline_hmget_keys) == 3
+    assert len(client.pipeline_hgetall_keys) == 2
+    assert client.hgetall_calls == 0
+
+    filtered = await backend.list_tasks(task_name="tasks.email", key="dup-k")
+    assert [item.id for item in filtered.items] == [t5.id, t2.id, t1.id]
+    assert filtered.total == 3
+
+
+@pytest.mark.parametrize(
+    ("status", "queue", "expected_ids", "expected_counts"),
+    [
+        (None, None, ("t1", "t2", "t3"), (1, 0, 0)),
+        (None, "emails", ("t1", "t2"), (1, 0, 0)),
+        ("pending", None, ("t1",), (1, 0, 0)),
+        (("pending", "pending"), None, ("t1",), (1, 0, 0)),
+        (("pending", "pending"), "emails", ("t1",), (0, 1, 0)),
+        (("completed", "failed"), None, ("t2", "t3"), (0, 0, 1)),
+        (("completed", "failed"), "emails", ("t2",), (0, 2, 0)),
+    ],
+)
+async def test_redis_list_tasks_selects_minimal_index_set_operation(
+    status: "TaskStatus | Sequence[TaskStatus] | None",
+    queue: "str | None",
+    expected_ids: "tuple[str, ...]",
+    expected_counts: "tuple[int, int, int]",
+) -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client)))
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    records = {
+        "t1": QueuedTaskRecord(
+            id=UUID(int=1),
+            task_name="tasks.a",
+            status="pending",
+            queue="emails",
+            created_at=base + timedelta(seconds=1),
+        ),
+        "t2": QueuedTaskRecord(
+            id=UUID(int=2),
+            task_name="tasks.a",
+            status="completed",
+            queue="emails",
+            created_at=base + timedelta(seconds=2),
+        ),
+        "t3": QueuedTaskRecord(
+            id=UUID(int=3),
+            task_name="tasks.a",
+            status="failed",
+            queue="reports",
+            created_at=base + timedelta(seconds=3),
+        ),
+    }
+    _seed_listing_tasks(client, backend, tuple(records.values()))
+
+    page = await backend.list_tasks(status=status, queue=queue)
+
+    expected_uuids = [records[name].id for name in reversed(expected_ids)]
+    assert [item.id for item in page.items] == expected_uuids
+    assert page.total == len(expected_uuids)
+    assert (client.smembers_calls, client.sinter_calls, client.sunion_calls) == expected_counts
+
+
+async def test_redis_list_tasks_excludes_expired_terminal_ttl_hashes_without_short_page() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client)))
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    live = [
+        QueuedTaskRecord(task_name="tasks.done", status="completed", created_at=base + timedelta(seconds=index))
+        for index in range(1, 4)
+    ]
+    _seed_listing_tasks(client, backend, live)
+    expired_id = str(uuid4())
+    client.sets[backend._status_key("completed")].add(expired_id)
+    client.sets[backend._tasks_key].add(expired_id)
+
+    page = await backend.list_tasks(status="completed", limit=2, offset=0)
+
+    assert page.total == 3
+    assert [item.id for item in page.items] == [live[2].id, live[1].id]
+    assert page.has_more is True
+    assert len(client.pipeline_hmget_keys) == 4
+    assert len(client.pipeline_hgetall_keys) == 2
+
+
+async def test_redis_list_tasks_out_of_range_offset_skips_hgetall() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client)))
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    _seed_listing_tasks(
+        client,
+        backend,
+        [
+            QueuedTaskRecord(task_name="tasks.page", status="pending", created_at=base + timedelta(seconds=index))
+            for index in range(3)
+        ],
+    )
+
+    page = await backend.list_tasks(limit=2, offset=5)
+
+    assert page == TaskListPage(items=[], limit=2, offset=5, total=3)
+    assert len(client.pipeline_hmget_keys) == 3
+    assert client.pipeline_hgetall_keys == []
+
+
+async def test_redis_list_tasks_falls_back_to_created_at_and_handles_mid_call_expiry() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client)))
+    same_time = datetime(2026, 1, 1, tzinfo=UTC)
+    low = QueuedTaskRecord(id=UUID(int=1), task_name="tasks.tie", status="completed", created_at=same_time)
+    high = QueuedTaskRecord(id=UUID(int=2), task_name="tasks.tie", status="completed", created_at=same_time)
+    newer = QueuedTaskRecord(
+        id=UUID(int=3), task_name="tasks.tie", status="completed", created_at=same_time + timedelta(seconds=5)
+    )
+    _seed_listing_tasks(client, backend, (low, high, newer), drop_created_score=True)
+
+    page = await backend.list_tasks(status="completed")
+    assert [item.id for item in page.items] == [newer.id, high.id, low.id]
+
+    def expire_newer_after_hmget() -> "None":
+        client.hashes.pop(backend._task_key(newer.id), None)
+
+    client.after_hmget_execute = expire_newer_after_hmget
+    raced_page = await backend.list_tasks(status="completed", limit=2, offset=0)
+
+    assert raced_page.total == 3
+    assert [item.id for item in raced_page.items] == [high.id]
+
+
+async def test_redis_list_tasks_batches_hmget_over_500_candidates() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client)))
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    records = [
+        QueuedTaskRecord(task_name="tasks.bulk", status="pending", created_at=base + timedelta(seconds=index))
+        for index in range(505)
+    ]
+    _seed_listing_tasks(client, backend, records)
+
+    page = await backend.list_tasks(status="pending", limit=2, offset=0)
+
+    assert page.total == 505
+    assert [item.id for item in page.items] == [records[-1].id, records[-2].id]
+    assert page.has_more is True
+    assert len(client.pipeline_hmget_keys) == 505
+    assert len(client.pipeline_hgetall_keys) == 2
+    assert client.pipeline_execute_calls == 3
+
+
+@pytest.mark.parametrize(
+    ("status", "queue", "expected_ids"),
+    [
+        ("completed", None, ("done-2", "done-1")),
+        ("completed", "emails", ("done-1",)),
+        (("completed", "failed"), None, ("fail-1", "done-2", "done-1")),
+        (("completed", "failed"), "emails", ("fail-1", "done-1")),
+        (("completed", "cancelled"), "emails", ("done-1",)),
+    ],
+)
+async def test_redis_list_tasks_handles_resp2_list_and_none_replies(
+    status: "TaskStatus | Sequence[TaskStatus]", queue: "str | None", expected_ids: "tuple[str, ...]"
+) -> "None":
+    client = _CountingRedisClient(resp2_list_replies=True, simulate_missing_hmget_none=True)
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client)))
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    records = {
+        "done-1": QueuedTaskRecord(
+            id=UUID(int=1),
+            task_name="tasks.resp2",
+            status="completed",
+            queue="emails",
+            created_at=base + timedelta(seconds=1),
+        ),
+        "done-2": QueuedTaskRecord(
+            id=UUID(int=2),
+            task_name="tasks.resp2",
+            status="completed",
+            queue="reports",
+            created_at=base + timedelta(seconds=2),
+        ),
+        "fail-1": QueuedTaskRecord(
+            id=UUID(int=3),
+            task_name="tasks.resp2",
+            status="failed",
+            queue="emails",
+            created_at=base + timedelta(seconds=3),
+        ),
+    }
+    _seed_listing_tasks(client, backend, tuple(records.values()))
+    ghost_id = str(uuid4())
+    for status_name in ("completed", "failed"):
+        client.sets[backend._status_key(status_name)].add(ghost_id)
+    client.sets[backend._queue_index_key("emails")].add(ghost_id)
+    client.sets[backend._tasks_key].add(ghost_id)
+
+    page = await backend.list_tasks(status=status, queue=queue)
+
+    assert [item.id for item in page.items] == [records[name].id for name in expected_ids]
+    assert page.total == len(expected_ids)
+
+
 class _CountingRedisClient:
-    def __init__(self) -> "None":
+    def __init__(self, *, resp2_list_replies: "bool" = False, simulate_missing_hmget_none: "bool" = False) -> "None":
+        self.resp2_list_replies = resp2_list_replies
+        self.simulate_missing_hmget_none = simulate_missing_hmget_none
         self.hashes: "dict[str, dict[str, str]]" = {}
         self.sets: "dict[str, builtins.set[str]]" = {}
         self.strings: "dict[str, str]" = {}
         self.zsets: "dict[str, dict[str, float]]" = {}
+        self.after_hmget_execute: "Callable[[], None] | None" = None
         self.after_hgetall_execute: "Callable[[], None] | None" = None
         self.before_touch_eval: "Callable[[], None] | None" = None
         self.eval_calls: "list[tuple[Any, ...]]" = []
         self.hgetall_calls = 0
         self.pipeline_calls = 0
         self.pipeline_execute_calls = 0
+        self.pipeline_hgetall_keys: "list[str]" = []
+        self.pipeline_hmget_keys: "list[str]" = []
         self.publish_calls = 0
         self.published: "list[tuple[str, str]]" = []
         self.pubsub_calls = 0
         self.scard_calls = 0
+        self.sinter_calls = 0
         self.smembers_calls = 0
+        self.sunion_calls = 0
         self.pubsubs: "list[_CountingPubSub]" = []
 
     async def hgetall(self, key: "str") -> "dict[str, str]":
@@ -345,9 +640,51 @@ class _CountingRedisClient:
         self.scard_calls += 1
         return len(self.sets.get(key, set()))
 
-    async def smembers(self, key: "str") -> "builtins.set[str]":
+    async def smembers(self, key: "str") -> "builtins.set[str] | list[str]":
         self.smembers_calls += 1
-        return self.sets.get(key, builtins.set())
+        members = self.sets.get(key, builtins.set())
+        return sorted(members) if self.resp2_list_replies else members
+
+    async def sinter(self, *keys: "Any") -> "builtins.set[str] | list[str]":
+        members = self._sinter_sets(keys)
+        return sorted(members) if self.resp2_list_replies else members
+
+    async def sunion(self, *keys: "Any") -> "builtins.set[str] | list[str]":
+        members = self._sunion_sets(keys)
+        return sorted(members) if self.resp2_list_replies else members
+
+    def _sinter_sets(self, keys: "tuple[Any, ...]") -> "builtins.set[str]":
+        self.sinter_calls += 1
+        target_keys = self._resolve_set_keys(keys)
+        if not target_keys:
+            return builtins.set()
+        result = builtins.set(self.sets.get(target_keys[0], builtins.set()))
+        for key in target_keys[1:]:
+            result.intersection_update(self.sets.get(key, builtins.set()))
+        return result
+
+    def _sunion_sets(self, keys: "tuple[Any, ...]") -> "builtins.set[str]":
+        self.sunion_calls += 1
+        result: "builtins.set[str]" = builtins.set()
+        for key in self._resolve_set_keys(keys):
+            result.update(self.sets.get(key, builtins.set()))
+        return result
+
+    def _hmget_values(self, name: "str", fields: "Sequence[str]") -> "list[str | None] | None":
+        mapping = self.hashes.get(name)
+        if mapping is None:
+            return None if self.simulate_missing_hmget_none else [None for _ in fields]
+        return [mapping.get(field) for field in fields]
+
+    @staticmethod
+    def _resolve_set_keys(keys: "tuple[Any, ...]") -> "list[str]":
+        resolved: "list[str]" = []
+        for item in keys:
+            if isinstance(item, str):
+                resolved.append(item)
+            else:
+                resolved.extend(str(entry) for entry in item)
+        return resolved
 
     async def zrangebyscore(
         self,
@@ -430,6 +767,11 @@ class _CountingPipeline:
         self.operations.append(("hgetall", (key,), {}))
         return self
 
+    def hmget(self, name: "str", keys: "str | Sequence[str]", *args: "str") -> "_CountingPipeline":
+        fields = [keys, *args] if isinstance(keys, str) else [*keys, *args]
+        self.operations.append(("hmget", (name, fields), {}))
+        return self
+
     def eval(self, script: "str", numkeys: "int", *keys_and_args: "str") -> "_CountingPipeline":
         self.operations.append(("eval", (script, numkeys, *keys_and_args), {}))
         return self
@@ -473,6 +815,10 @@ class _CountingPipeline:
         self.operations.append(("smembers", (key,), {}))
         return self
 
+    def sinter(self, *keys: "Any") -> "_CountingPipeline":
+        self.operations.append(("sinter", keys, {}))
+        return self
+
     async def execute(self) -> "list[Any]":
         self.client.pipeline_execute_calls += 1
         results: "list[Any]" = []
@@ -480,6 +826,11 @@ class _CountingPipeline:
         self.operations.clear()
         for operation, args, kwargs in operations:
             results.append(self._execute_operation(operation, args, kwargs))
+        if operations and all(operation == "hmget" for operation, _, _ in operations):
+            hook = self.client.after_hmget_execute
+            self.client.after_hmget_execute = None
+            if hook is not None:
+                hook()
         if operations and all(operation == "hgetall" for operation, _, _ in operations):
             hook = self.client.after_hgetall_execute
             self.client.after_hgetall_execute = None
@@ -489,7 +840,13 @@ class _CountingPipeline:
 
     def _execute_operation(self, operation: "str", args: "tuple[Any, ...]", kwargs: "dict[str, Any]") -> "Any":
         if operation == "hgetall":
-            return self.client.hashes.get(cast("str", args[0]), {})
+            key = cast("str", args[0])
+            self.client.pipeline_hgetall_keys.append(key)
+            return self.client.hashes.get(key, {})
+        if operation == "hmget":
+            key = cast("str", args[0])
+            self.client.pipeline_hmget_keys.append(key)
+            return self.client._hmget_values(key, cast("list[str]", args[1]))
         if operation == "eval":
             return self._execute_eval(args)
         if operation == "hset":
@@ -509,7 +866,13 @@ class _CountingPipeline:
             return len(self.client.sets.get(cast("str", args[0]), set()))
         if operation == "smembers":
             self.client.smembers_calls += 1
-            return self.client.sets.get(cast("str", args[0]), set())
+            members = self.client.sets.get(cast("str", args[0]), builtins.set())
+            return sorted(members) if self.client.resp2_list_replies else members
+        if operation == "sinter":
+            members = self.client._sinter_sets(args)
+            if self.client.simulate_missing_hmget_none and not members:
+                return None
+            return sorted(members) if self.client.resp2_list_replies else members
         return None
 
     def _execute_eval(self, args: "tuple[Any, ...]") -> "int":

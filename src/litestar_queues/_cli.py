@@ -15,7 +15,7 @@ import signal
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 import click
 
@@ -24,20 +24,23 @@ from litestar_queues.consumer import run_task
 from litestar_queues.execution import get_execution_backend
 from litestar_queues.execution.base import BaseConsumerExecutionBackend
 from litestar_queues.maintenance import QueueMaintenanceService
+from litestar_queues.models import TaskStatus
 from litestar_queues.plugin import QueuePlugin
 from litestar_queues.task import get_task_registry, load_task_modules
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
     from litestar import Litestar
     from litestar.cli._utils import LitestarEnv
 
     from litestar_queues.maintenance import MaintenancePhase, QueueMaintenanceSummary
+    from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.service import QueueService
     from litestar_queues.worker.runtime import ShutdownWatchdog
 
 __all__ = (
+    "list_command",
     "queues_group",
     "register",
     "run_command",
@@ -51,6 +54,8 @@ __all__ = (
 logger = logging.getLogger(__name__)
 
 FORCE_STOP_SIGNAL_COUNT = 2
+
+_TASK_STATUS_CHOICES: "tuple[str, ...]" = get_args(TaskStatus)
 
 _EPHEMERAL_UNREACHABLE = (
     "queue_backend='ephemeral' lives in a private database that its owning 'litestar run' "
@@ -249,6 +254,50 @@ def status_command(ctx: "click.Context", queue_filter: "str | None", as_json: "b
     plugin = _resolve_plugin(env)
     _reject_ephemeral_storage(plugin, "status")
     exit_code = asyncio.run(_status_run(plugin, queue_filter, as_json))
+    ctx.exit(exit_code)
+
+
+@queues_group.command(name="list", help="List queued task records with filtering and pagination.")
+@click.option(
+    "--status",
+    "statuses",
+    multiple=True,
+    type=click.Choice(_TASK_STATUS_CHOICES),
+    help="Filter by task status. Repeatable.",
+)
+@click.option("--queue", "queue_filter", default=None, help="Filter by logical queue name.")
+@click.option("--task-name", "task_name", default=None, help="Filter by registered task name.")
+@click.option("--key", "dedup_key", default=None, help="Filter by deduplication key.")
+@click.option("--limit", type=click.IntRange(min=1), default=50, help="Maximum records to return (default 50).")
+@click.option("--offset", type=click.IntRange(min=0), default=0, help="Zero-based starting record offset (default 0).")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def list_command(
+    ctx: "click.Context",
+    *,
+    statuses: "tuple[str, ...]",
+    queue_filter: "str | None",
+    task_name: "str | None",
+    dedup_key: "str | None",
+    limit: "int",
+    offset: "int",
+    as_json: "bool",
+) -> "None":
+    """List queued task records matching optional filters."""
+    env = _ensure_env(ctx)
+    plugin = _resolve_plugin(env)
+    _reject_ephemeral_storage(plugin, "list")
+    exit_code = asyncio.run(
+        _list_run(
+            plugin,
+            statuses=statuses,
+            queue_filter=queue_filter,
+            task_name=task_name,
+            key=dedup_key,
+            limit=limit,
+            offset=offset,
+            as_json=as_json,
+        )
+    )
     ctx.exit(exit_code)
 
 
@@ -541,6 +590,102 @@ async def _status_run(plugin: "QueuePlugin", queue_filter: "str | None", as_json
             click.echo(f"{key:<12}{payload[key]:>8}")
         click.echo(f"{'total':<12}{payload['total']:>8}")
     return 0
+
+
+async def _list_run(
+    plugin: "QueuePlugin",
+    *,
+    statuses: "tuple[str, ...]",
+    queue_filter: "str | None",
+    task_name: "str | None",
+    key: "str | None",
+    limit: "int",
+    offset: "int",
+    as_json: "bool",
+) -> "int":
+    """Query ``QueueService.list_tasks`` and emit either JSON or a summary table.
+
+    Forwards ``statuses or None`` so an omitted ``--status`` flag queries every
+    status instead of hitting the empty-sequence fast path.
+    """
+    service = _open_service(plugin)
+    try:
+        await service.open()
+        page = await service.list_tasks(
+            status=cast("tuple[TaskStatus, ...] | None", statuses or None),
+            queue=queue_filter,
+            task_name=task_name,
+            key=key,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as exc:
+        click.echo(f"error: {exc}", err=True)
+        return 1
+    finally:
+        await service.close()
+
+    if as_json:
+        payload: "dict[str, Any]" = {
+            "items": [_serialize_task_summary(record) for record in page.items],
+            "limit": page.limit,
+            "offset": page.offset,
+            "total": page.total,
+            "has_more": page.has_more,
+        }
+        click.echo(json.dumps(payload, separators=(",", ":")))
+    else:
+        _emit_task_list_table(
+            page.items, total=page.total, limit=page.limit, offset=page.offset, has_more=page.has_more
+        )
+    return 0
+
+
+def _iso_or_none(value: "datetime | None") -> "str | None":
+    return value.isoformat() if value is not None else None
+
+
+def _serialize_task_summary(record: "QueuedTaskRecord") -> "dict[str, Any]":
+    """Serialize scalar operational metadata only, omitting raw task payloads."""
+    return {
+        "id": str(record.id),
+        "task_name": record.task_name,
+        "queue": record.queue,
+        "status": record.status,
+        "key": record.key,
+        "priority": record.priority,
+        "retry_count": record.retry_count,
+        "max_retries": record.max_retries,
+        "execution_backend": record.execution_backend,
+        "execution_profile": record.execution_profile,
+        "execution_ref": record.execution_ref,
+        "worker_id": record.worker_id,
+        "created_at": _iso_or_none(record.created_at),
+        "queued_at": _iso_or_none(record.queued_at),
+        "scheduled_at": _iso_or_none(record.scheduled_at),
+        "started_at": _iso_or_none(record.started_at),
+        "completed_at": _iso_or_none(record.completed_at),
+        "heartbeat_at": _iso_or_none(record.heartbeat_at),
+        "expires_at": _iso_or_none(record.expires_at),
+        "error": record.error,
+    }
+
+
+def _emit_task_list_table(
+    items: "Sequence[QueuedTaskRecord]", *, total: "int", limit: "int", offset: "int", has_more: "bool"
+) -> "None":
+    if not items:
+        click.echo(f"no tasks found (total={total}, limit={limit}, offset={offset}, has_more={str(has_more).lower()})")
+        return
+    click.echo(f"{'ID':<36}  {'Status':<10}  {'Queue':<14}  {'Task':<26}  {'Created':<20}  Key")
+    click.echo(f"{'-' * 36}  {'-' * 10}  {'-' * 14}  {'-' * 26}  {'-' * 20}  {'-' * 3}")
+    for record in items:
+        created = record.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        click.echo(
+            f"{record.id!s:<36}  {record.status:<10}  {record.queue:<14}  "
+            f"{record.task_name:<26}  {created:<20}  {record.key or '-'}"
+        )
+    click.echo(f"total={total} limit={limit} offset={offset} has_more={str(has_more).lower()}")
 
 
 async def _scheduler_health_run(plugin: "QueuePlugin", minutes: "int") -> "int":

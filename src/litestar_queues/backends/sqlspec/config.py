@@ -3,9 +3,16 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+from litestar_queues.backends.sqlspec.extension import (
+    configure_events_migration_extension,
+    configure_queue_migration_extension,
+    validate_migration_mode,
+)
 from litestar_queues.backends.sqlspec.schema import (
+    DEFAULT_TABLE_NAME,
     resolve_column_map,
     validate_native_json_columns,
+    validate_queue_sqlspec_config,
     validate_table_name,
 )
 from litestar_queues.events import EventHistoryExtraColumn, validate_event_history_extra_columns
@@ -17,7 +24,7 @@ if TYPE_CHECKING:
     from sqlspec import SQLSpec
     from sqlspec.extensions.events import AsyncEventChannel
 
-    from litestar_queues.backends.sqlspec._typing import SQLSpecConfig, SQLSpecStoreConfig
+    from litestar_queues.backends.sqlspec._typing import ExtensionMigrationMode, SQLSpecConfig, SQLSpecStoreConfig
     from litestar_queues.config import QueueConfig
 
 __all__ = (
@@ -120,12 +127,17 @@ class SQLSpecBackendConfig:
     manage_schema: "bool" = True
     """Whether backend startup and migrations may create package-owned queue tables."""
 
+    migration_mode: "ExtensionMigrationMode" = "reconcile"
+    """SQLSpec extension migration strategy: ``'reconcile'`` or ``'versioned'``."""
+
     terminal_ttl: "float | None" = None
     """Optional retention window in seconds for terminal task rows.
 
     On databases that support filtered row-level expiration (CockroachDB and
-    Google Cloud Spanner), ``0001_create_queue_tasks.py`` and ``create_statements()``
-    embed a native row-level TTL policy scoped to terminal rows. When
+    Google Cloud Spanner), SQLSpec extension schema reconciliation
+    (``reconcile.py`` / ``migration_mode="reconcile"``),
+    ``0001_create_queue_tasks.py``, and ``create_statements()`` embed and
+    converge a native row-level TTL policy scoped to terminal rows. When
     ``WorkerConfig.terminal_retention`` is ``None``, workers also inherit this
     retention window for periodic ``cleanup_terminal()`` sweeps across all SQL
     dialects.
@@ -133,6 +145,12 @@ class SQLSpecBackendConfig:
 
     def __post_init__(self) -> "None":
         """Validate adopter-owned table and wakeup-transport configuration."""
+        if self.sqlspec_config is not None:
+            validate_queue_sqlspec_config(self.sqlspec_config, parameter_name="SQLSpecBackendConfig.sqlspec_config")
+        if self.heartbeat_pool_config is not None:
+            validate_queue_sqlspec_config(
+                self.heartbeat_pool_config, parameter_name="SQLSpecBackendConfig.heartbeat_pool_config"
+            )
         if self.queue_table_name is not None:
             self.queue_table_name = validate_table_name(self.queue_table_name)
         if self.event_history_table_name is not None:
@@ -144,6 +162,7 @@ class SQLSpecBackendConfig:
         if self.terminal_ttl is not None and self.terminal_ttl <= 0:
             msg = "SQLSpecBackendConfig.terminal_ttl must be greater than 0."
             raise QueueConfigurationError(msg)
+        self.migration_mode = validate_migration_mode(self.migration_mode)
         self.event_history_extra_columns = validate_event_history_extra_columns(self.event_history_extra_columns)
         self.column_map = resolve_column_map(self.column_map)
         self.native_json_columns = validate_native_json_columns(frozenset(self.native_json_columns))
@@ -155,17 +174,13 @@ class SQLSpecBackendConfig:
         this without importing the SQLSpec backend.
         """
         from litestar_queues.backends.sqlspec.backend import resolve_events_migration_backend
-        from litestar_queues.backends.sqlspec.extension import (
-            configure_events_migration_extension,
-            configure_queue_migration_extension,
-        )
-        from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME
 
         sqlspec_config = self.sqlspec_config
         if sqlspec_config is None and self.sqlspec is not None:
             registered_configs = tuple(self.sqlspec.configs.values())
             if len(registered_configs) == 1:
                 sqlspec_config = registered_configs[0]
+                validate_queue_sqlspec_config(sqlspec_config, parameter_name="SQLSpecBackendConfig.sqlspec")
         if sqlspec_config is None:
             return
 
@@ -174,6 +189,7 @@ class SQLSpecBackendConfig:
             backend=resolve_events_migration_backend(self, cast("SQLSpecConfig", sqlspec_config)),
             queue_table=(self.worker_wakeups.queue_table_name if self.worker_wakeups is not None else None),
             manage_schema=self.manage_schema,
+            migration_mode=self.migration_mode,
         )
 
         extension_config = sqlspec_config.extension_config or {}
@@ -197,4 +213,5 @@ class SQLSpecBackendConfig:
             column_map=self.column_map,
             manage_schema=self.manage_schema,
             terminal_ttl=terminal_ttl,
+            migration_mode=self.migration_mode,
         )

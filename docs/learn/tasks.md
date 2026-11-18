@@ -67,3 +67,16 @@ When a worker or one-shot consumer executes a claimed record via `QueueService.e
 
 - A return value becomes the completed result persisted on `QueuedTaskRecord.result`, and the task transitions to `completed`.
 - A raised exception follows the configured retry policy: retryable exceptions increment `retry_count` and reschedule the record while `retry_count < max_retries`, whereas exhausting retries or calling `non_retryable()` transitions the record to `failed`.
+
+## Querying & Deduplication Key History
+
+Pass `key=` to `QueueService.list_tasks(key=...)` to inspect queued records associated with an explicit or derived deduplication key:
+
+```python
+page = await queue_service.list_tasks(key="invoice:ord-1001", limit=20)
+```
+
+When a `unique_until="terminal"` deduplication key is reused after an earlier run finishes, historical `key` retention follows each storage backend's native uniqueness implementation:
+
+- **In-Memory, Ephemeral SQLite, Redis, and Valkey**: `InMemoryQueueBackend`, `EphemeralQueueBackend`, `RedisQueueBackend`, and `ValkeyQueueBackend` preserve `key` on historical terminal records, so `list_tasks(key=...)` returns all matching historical and active runs ordered newest-first (`(created_at DESC, id DESC)`).
+- **SQLSpec and Advanced Alchemy**: `SQLSpecQueueBackend` and `SQLAlchemyBackend` clear `task_key = None` on superseded terminal rows when a deduplication key is reused, so `list_tasks(key=...)` matches the record currently holding that key.

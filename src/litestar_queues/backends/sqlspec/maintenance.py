@@ -36,11 +36,32 @@ class SQLSpecMaintenanceStore(SQLSpecQueueStore):
         super().__init__(*args, **kwargs)
         self._column_map = {}
 
+    def create_table_statement(self) -> "str":
+        """Return the maintenance coordination ``CREATE TABLE`` statement."""
+        if not self._manage_schema:
+            return ""
+        return self._create_table_sql()
+
+    def companion_indexes(self) -> "tuple[tuple[str, str], ...]":
+        """Return empty companion index tuple (maintenance uses primary key only)."""
+        return ()
+
     def create_statements(self) -> "list[str]":
         """Return statements that create the maintenance coordination table."""
-        if not self._manage_schema:
-            return []
-        return [self._create_table_sql()]
+        statement = self.create_table_statement()
+        return [statement] if statement else []
+
+    def prepare_schema_sync(self, driver: "Any") -> "None":
+        """Prevent inherited adapter queue stores from running queue schema prep."""
+
+    async def prepare_schema_async(self, driver: "Any") -> "None":
+        """Prevent inherited adapter queue stores from running queue schema prep."""
+
+    def reconcile_storage_options_sync(self, driver: "Any") -> "None":
+        """Prevent inherited Postgres or CockroachDB queue options from running on maintenance."""
+
+    async def reconcile_storage_options_async(self, driver: "Any") -> "None":
+        """Prevent inherited Postgres or CockroachDB queue options from running on maintenance."""
 
     def drop_statements(self) -> "list[str]":
         """Return statements that drop the maintenance coordination table."""
@@ -139,22 +160,20 @@ class SpannerMaintenanceStore(SQLSpecMaintenanceStore):
     identifier_quote_style = "backtick"
     skip_cleanup_rollback = True
 
-    def create_statements(self) -> "list[str]":
-        """Return the Spanner maintenance coordination CREATE TABLE statement."""
+    def create_table_statement(self) -> "str":
+        """Return the Spanner maintenance coordination ``CREATE TABLE`` statement."""
         if not self._manage_schema:
-            return []
+            return ""
         columns = (
             f"{self._quote_identifier('name')} {self._indexed_text_type()} NOT NULL",
             f"{self._quote_identifier('token')} {self._indexed_text_type()} NOT NULL",
             f"{self._quote_identifier('expires_at')} {self._timestamp_type()} NOT NULL",
         )
         column_sql = ",\n  ".join(columns)
-        return [
-            (
-                f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) "
-                f"PRIMARY KEY ({self._quote_identifier('name')})"
-            )
-        ]
+        return (
+            f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) "
+            f"PRIMARY KEY ({self._quote_identifier('name')})"
+        )
 
     def drop_statements(self) -> "list[str]":
         """Return the Spanner maintenance coordination DROP TABLE statement."""

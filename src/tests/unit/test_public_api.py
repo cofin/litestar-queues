@@ -566,6 +566,7 @@ def test_public_cli_facade_reexports_click_commands() -> "None":
     from litestar_queues import _cli, cli
 
     expected = {
+        "list_command",
         "queues_group",
         "register",
         "run_command",

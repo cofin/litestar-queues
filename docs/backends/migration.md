@@ -64,12 +64,20 @@ When transitioning from embedded SQLite or DuckDB to a network database in produ
 - **`aq` / `txeventq`**: Oracle Advanced Queuing and Transactional Event Queues.
 - **`polling`**: Adaptive interval polling without an event channel.
 
+## SQLSpec Migration Modes (reconcile vs. versioned)
+
+When `manage_schema=True` on [`SQLSpecBackendConfig`](../reference/backends.md#litestar_queues.backends.sqlspec.SQLSpecBackendConfig), choose the schema lifecycle mode that fits your deployment pipeline:
+
+- **`migration_mode="reconcile"` (default, `sqlspec>=0.72.0`)**: Converges `queue_task`, optional `queue_task_event_history` (including nullable `EventHistoryExtraColumn` additions), `queue_maintenance`, `queue_task_reservation`, companion indexes, CockroachDB `terminal_ttl`, and durable `sqlspec_event_queue` tables on every `upgrade("head")` without adding `ext_litestar_queues_*` rows to `ddl_migrations`. Raises `MigrationError` under `strict=True` on non-additive column drift and drops enabled queue tables in reverse order on `downgrade("base")`.
+- **`migration_mode="versioned"`**: Applies packaged revision `0001_create_queue_tasks` once and tracks `ext_litestar_queues_0001` in `ddl_migrations` when immutable migration histories are required.
+- **`manage_schema=False` (external DDL) & Google Cloud Spanner**: Set `manage_schema=False` when external migration pipelines own all DDL. On Google Cloud Spanner (`spanner`), schema reconciliation refuses `upgrade("head")` with `MigrationError`; apply DDL explicitly via `await backend.create_schema()` or external Spanner DDL tooling.
+
 ## Forever-Uniqueness Reservation Storage
 
 Tasks configured with `@task(..., unique_until="forever")` persist a lightweight [`TaskReservation`](../reference/tasks-and-models.md#litestar_queues.models.TaskReservation) (`key`, `task_id`, `task_name`, `created_at`) in a dedicated reservation store separate from `queue_task`:
 
-- **SQLSpec**: Stored in `queue_task_reservation` (configurable via `SQLSpecBackendConfig.task_reservation_table_name`), created automatically by migration `0001_create_queue_tasks` or `await backend.create_schema()`.
+- **SQLSpec**: Stored in `queue_task_reservation` (configurable via `SQLSpecBackendConfig.task_reservation_table_name`), provisioned automatically by default `migration_mode="reconcile"`, versioned migration `0001_create_queue_tasks`, or `await backend.create_schema()`.
 - **Advanced Alchemy**: Stored in `QueueTaskReservationModel` (`queue_task_reservation` table, or a custom model composed with `QueueTaskReservationModelMixin`).
 - **Redis & Valkey**: Stored in the `{prefix}:task_reservations` hash.
 
-Routine terminal cleanup (`cleanup_completed`, `terminal_ttl`, and `WorkerConfig.terminal_retention`) and event history pruning never delete `TaskReservation` entries. To release a forever reservation so the identity key can be enqueued again, call `await queue_service.reset_task_identity(key)` with the exact effective key.
+Routine terminal cleanup (`cleanup_terminal`, `terminal_ttl`, and `WorkerConfig.terminal_retention`) and event history pruning never delete `TaskReservation` entries. To release a forever reservation so the identity key can be enqueued again, call `await queue_service.reset_task_identity(key)` with the exact effective key.

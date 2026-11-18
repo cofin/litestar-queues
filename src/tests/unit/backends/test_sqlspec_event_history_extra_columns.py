@@ -12,10 +12,16 @@ pytest.importorskip("aiosqlite")
 from typing import TYPE_CHECKING, Any
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
+from sqlspec.adapters.spanner import SpannerSyncConfig
+from sqlspec.migrations import SchemaTarget
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.backend import SQLSpecQueueBackend
-from litestar_queues.backends.sqlspec.event_log import SQLSpecQueueEventLogStore, create_event_log_store
+from litestar_queues.backends.sqlspec.event_log import (
+    SpannerQueueEventLogStore,
+    SQLSpecQueueEventLogStore,
+    create_event_log_store,
+)
 from litestar_queues.backends.sqlspec.schema import EVENT_HISTORY_COLUMNS
 from litestar_queues.events import EventHistoryExtraColumn, QueueEventQuery, validate_event_history_extra_columns
 from litestar_queues.exceptions import QueueConfigurationError
@@ -101,10 +107,19 @@ def _store(*extra: "EventHistoryExtraColumn") -> "SQLSpecQueueEventLogStore":
     )
 
 
-def _store_for_dialect(dialect: "str") -> "object":
+def _store_for_dialect(
+    dialect: "str", *extra: "EventHistoryExtraColumn", manage_schema: "bool" = True, native_spanner: "bool" = False
+) -> "SQLSpecQueueEventLogStore":
+    if native_spanner:
+        spanner_config = SpannerSyncConfig(connection_config={"project": "p", "instance": "i", "database": "d"})
+        return create_event_log_store(
+            spanner_config, queue_table_name="queue_task", manage_schema=manage_schema, extra_columns=extra
+        )
     config = AiosqliteConfig(connection_config={"database": ":memory:"})
     config.statement_config = config.statement_config.replace(dialect=dialect)
-    return create_event_log_store(config, queue_table_name="queue_task")
+    return create_event_log_store(
+        config, queue_table_name="queue_task", manage_schema=manage_schema, extra_columns=extra
+    )
 
 
 def test_extra_column_declaration_validates() -> "None":
@@ -246,7 +261,7 @@ def test_store_without_extras_emits_unchanged_statements() -> "None":
 
 
 def test_mysql_event_history_uses_inline_indexes_and_backtick_quoting() -> "None":
-    statements = _store_for_dialect("mysql").create_statements()  # type: ignore[attr-defined]
+    statements = _store_for_dialect("mysql").create_statements()
 
     assert len(statements) == 1
     assert statements[0].startswith("CREATE TABLE IF NOT EXISTS `queue_task_event_history`")
@@ -266,7 +281,7 @@ def test_mysql_event_history_bounds_generated_index_names() -> "None":
 
 
 def test_mssql_event_history_bypasses_sqlglot_for_native_datetime_type() -> "None":
-    statements = _store_for_dialect("tsql").create_statements()  # type: ignore[attr-defined]
+    statements = _store_for_dialect("tsql").create_statements()
 
     assert statements[0].lstrip().startswith("IF OBJECT_ID")
     assert "DATETIME2(6)" in statements[0]
@@ -276,12 +291,12 @@ def test_mssql_event_history_bypasses_sqlglot_for_native_datetime_type() -> "Non
 
 
 def test_oracle_event_history_prefixes_reserved_level_column() -> "None":
-    statements = _store_for_dialect("oracle").create_statements()  # type: ignore[attr-defined]
-
     store = _store_for_dialect("oracle")
+    statements = store.create_statements()
+
     assert "EVENT_LEVEL VARCHAR(255)" in statements[0]
-    assert "EVENT_LEVEL" in store.insert_events_template()  # type: ignore[attr-defined]
-    selected = store.select_events(QueueEventQuery()).build(dialect="oracle").sql  # type: ignore[attr-defined]
+    assert "EVENT_LEVEL" in store.insert_events_template()
+    selected = store.select_events(QueueEventQuery()).build(dialect="oracle").sql
     assert "event_level" in selected
     assert "event_level AS level" not in selected
     assert "SCOPE_KEY" in statements[0]
@@ -290,7 +305,7 @@ def test_oracle_event_history_prefixes_reserved_level_column() -> "None":
 
 
 def test_spanner_event_history_uses_backtick_quoted_identifiers() -> "None":
-    statements = _store_for_dialect("spanner").create_statements()  # type: ignore[attr-defined]
+    statements = _store_for_dialect("spanner").create_statements()
 
     assert statements[0].startswith("CREATE TABLE IF NOT EXISTS `queue_task_event_history`")
 
@@ -439,3 +454,90 @@ async def test_arrow_history_second_row_failure_rolls_back_the_batch(monkeypatch
     driver.rollback.assert_awaited_once()
     driver.commit.assert_not_awaited()
     driver.execute_many.assert_not_awaited()
+
+
+def test_mysql_event_log_separates_table_and_alter_indexes() -> "None":
+    store = _store_for_dialect("mysql", _TENANT)
+    table_ddl = store.create_table_statement()
+    indexes = store.companion_indexes()
+    statements = store.create_statements()
+
+    assert "INDEX " not in table_ddl
+    assert table_ddl.startswith("CREATE TABLE IF NOT EXISTS `queue_task_event_history`")
+    assert "`tenant_id`" in table_ddl
+    assert len(indexes) == 7
+    assert all(sql_stmt.startswith("ALTER TABLE `queue_task_event_history` ADD INDEX ") for _, sql_stmt in indexes)
+    assert any(name.endswith("_tenant_id") and "(`tenant_id`, `occurred_at`)" in sql_stmt for name, sql_stmt in indexes)
+    assert len(statements) == 1
+    assert "INDEX `ix_queue_task_event_history_task_id`" in statements[0]
+    assert "INDEX `ix_queue_task_event_history_tenant_id`" in statements[0]
+    target = SchemaTarget.from_ddl(store.table_name, table_ddl, dialect=store.sqlglot_dialect())
+    assert len(target.create_table.columns) == 26
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres", "mysql", "tsql", "oracle"])
+@pytest.mark.parametrize(("extra_columns", "expected_columns", "expected_indexes"), [((), 25, 6), ((_TENANT,), 26, 7)])
+def test_event_log_schema_target_parses_all_dialects(
+    dialect: "str",
+    extra_columns: "tuple[EventHistoryExtraColumn, ...]",
+    expected_columns: "int",
+    expected_indexes: "int",
+) -> "None":
+    store = _store_for_dialect(dialect, *extra_columns)
+    table_ddl = store.create_table_statement()
+    indexes = store.companion_indexes()
+    target = SchemaTarget.from_ddl(store.table_name, table_ddl, dialect=store.sqlglot_dialect())
+
+    assert len(target.create_table.columns) == expected_columns
+    assert len(indexes) == expected_indexes
+    if dialect == "oracle":
+        assert "EVENT_LEVEL" in table_ddl
+        assert any(col.name.upper() == "EVENT_LEVEL" for col in target.create_table.columns)
+    if dialect == "mysql":
+        assert "INDEX " not in table_ddl
+        assert len(store.create_statements()) == 1
+    else:
+        assert store.create_statements() == [table_ddl, *(stmt for _, stmt in indexes)]
+
+
+def test_spanner_event_log_separates_table_and_companion_indexes() -> "None":
+    store = _store_for_dialect("spanner", _TENANT, native_spanner=True)
+    table_ddl = store.create_table_statement()
+    indexes = store.companion_indexes()
+
+    assert isinstance(store, SpannerQueueEventLogStore)
+    assert table_ddl.startswith("CREATE TABLE `queue_task_event_history`")
+    assert "PRIMARY KEY (`event_id`)" in table_ddl
+    assert "`tenant_id`" in table_ddl
+    assert len(indexes) == 7
+    assert all(stmt.startswith("CREATE INDEX ") for _, stmt in indexes)
+    assert store.create_statements() == [table_ddl, *(stmt for _, stmt in indexes)]
+
+
+@pytest.mark.parametrize(
+    ("dialect", "native_spanner"),
+    [("sqlite", False), ("postgres", False), ("mysql", False), ("tsql", False), ("oracle", False), ("spanner", True)],
+)
+def test_event_log_manage_schema_false_returns_empty_ddl_and_indexes(dialect: "str", native_spanner: "bool") -> "None":
+    store = _store_for_dialect(dialect, _TENANT, manage_schema=False, native_spanner=native_spanner)
+
+    assert store.create_table_statement() == ""
+    assert store.companion_indexes() == ()
+    assert store.create_statements() == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("dialect", "native_spanner"),
+    [("sqlite", False), ("postgres", False), ("mysql", False), ("tsql", False), ("oracle", False), ("spanner", True)],
+)
+async def test_event_log_schema_and_storage_hooks_are_noops(dialect: "str", native_spanner: "bool") -> "None":
+    store = _store_for_dialect(dialect, native_spanner=native_spanner)
+    spy = Mock()
+
+    store.prepare_schema_sync(spy)
+    await store.prepare_schema_async(spy)
+    store.reconcile_storage_options_sync(spy)
+    await store.reconcile_storage_options_async(spy)
+
+    assert spy.mock_calls == []

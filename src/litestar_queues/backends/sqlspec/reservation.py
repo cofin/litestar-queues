@@ -43,11 +43,32 @@ class SQLSpecTaskReservationStore(SQLSpecQueueStore):
         super().__init__(*args, **kwargs)
         self._column_map = {}
 
+    def create_table_statement(self) -> "str":
+        """Return the reservation ``CREATE TABLE`` statement."""
+        if not self._manage_schema:
+            return ""
+        return self._create_reservation_table_sql()
+
+    def companion_indexes(self) -> "tuple[tuple[str, str], ...]":
+        """Return empty companion index tuple (reservation uses identity_key primary key only)."""
+        return ()
+
     def create_statements(self) -> "list[str]":
         """Return statements that create the reservation table."""
-        if not self._manage_schema:
-            return []
-        return [self._create_reservation_table_sql()]
+        statement = self.create_table_statement()
+        return [statement] if statement else []
+
+    def prepare_schema_sync(self, driver: "Any") -> "None":
+        """No-op hook isolating reservation store from queue schema prep."""
+
+    async def prepare_schema_async(self, driver: "Any") -> "None":
+        """No-op hook isolating reservation store from queue schema prep."""
+
+    def reconcile_storage_options_sync(self, driver: "Any") -> "None":
+        """No-op hook isolating reservation store from queue storage options."""
+
+    async def reconcile_storage_options_async(self, driver: "Any") -> "None":
+        """No-op hook isolating reservation store from queue storage options."""
 
     def drop_statements(self) -> "list[str]":
         """Return statements that drop the reservation table."""
@@ -108,16 +129,16 @@ class OracleQueueReservationStore(SQLSpecTaskReservationStore):
     data_dictionary_dialect = "oracle"
     identifier_quote_style = "none"
 
-    def create_statements(self) -> "list[str]":
+    def create_table_statement(self) -> "str":
         """Return a retry-safe CREATE TABLE block supported before Oracle 23c."""
         if not self._manage_schema:
-            return []
+            return ""
         rendered = self._to_sql(self._create_reservation_table_statement(if_not_exists=False))
         unsplit_target = self._quote_unsplit_identifier(self.table_name)
         split_target = self._quoted_table_name()
         if unsplit_target != split_target:
             rendered = rendered.replace(unsplit_target, split_target, 1)
-        return [_oracle_ddl_block(rendered, ignored_code=-955)]
+        return _oracle_ddl_block(rendered, ignored_code=-955)
 
     def drop_statements(self) -> "list[str]":
         """Return a retry-safe DROP TABLE block supported before Oracle 23c."""
@@ -135,10 +156,10 @@ class SpannerQueueReservationStore(SQLSpecTaskReservationStore):
     identifier_quote_style = "backtick"
     skip_cleanup_rollback = True
 
-    def create_statements(self) -> "list[str]":
-        """Return the Spanner reservation CREATE TABLE statement."""
+    def create_table_statement(self) -> "str":
+        """Return the Spanner reservation ``CREATE TABLE`` statement."""
         if not self._manage_schema:
-            return []
+            return ""
         columns = (
             f"{self._quote_identifier('identity_key')} {self._indexed_text_type()} NOT NULL",
             f"{self._quote_identifier('task_id')} {self._id_type()} NOT NULL",
@@ -146,12 +167,10 @@ class SpannerQueueReservationStore(SQLSpecTaskReservationStore):
             f"{self._quote_identifier('created_at')} {self._timestamp_type()} NOT NULL",
         )
         column_sql = ",\n  ".join(columns)
-        return [
-            (
-                f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) "
-                f"PRIMARY KEY ({self._quote_identifier('identity_key')})"
-            )
-        ]
+        return (
+            f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) "
+            f"PRIMARY KEY ({self._quote_identifier('identity_key')})"
+        )
 
     def drop_statements(self) -> "list[str]":
         """Return the Spanner reservation DROP TABLE statement."""
@@ -197,12 +216,11 @@ class MssqlQueueReservationStore(SQLSpecTaskReservationStore):
     data_dictionary_dialect = "mssql"
     identifier_quote_style = "none"
 
-    def create_statements(self) -> "list[str]":
-        """Return the guarded SQL Server reservation CREATE TABLE statement."""
+    def create_table_statement(self) -> "str":
+        """Return the guarded SQL Server reservation ``CREATE TABLE`` statement."""
         if not self._manage_schema:
-            return []
-        return [
-            f"""
+            return ""
+        return f"""
         IF OBJECT_ID(N'{self.table_name}', N'U') IS NULL
         BEGIN
             CREATE TABLE {self._quoted_table_name()} (
@@ -213,7 +231,6 @@ class MssqlQueueReservationStore(SQLSpecTaskReservationStore):
             );
         END;
         """
-        ]
 
     def drop_statements(self) -> "list[str]":
         """Return the guarded SQL Server reservation DROP TABLE statement."""

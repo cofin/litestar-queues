@@ -76,12 +76,30 @@ def test_scan_public_docstrings_detects_violations(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "subcommand", ["run", "run-consumer", "run-task", "run-maintenance", "status", "scheduler-health"]
+    ("category_heading", "next_heading", "subcommand"),
+    [
+        ("Worker & Consumer Execution", "Maintenance, Status & Diagnostics", "run"),
+        ("Worker & Consumer Execution", "Maintenance, Status & Diagnostics", "run-consumer"),
+        ("Worker & Consumer Execution", "Maintenance, Status & Diagnostics", "run-task"),
+        ("Maintenance, Status & Diagnostics", "Public Python CLI Surface", "run-maintenance"),
+        ("Maintenance, Status & Diagnostics", "Public Python CLI Surface", "status"),
+        ("Maintenance, Status & Diagnostics", "Public Python CLI Surface", "list"),
+        ("Maintenance, Status & Diagnostics", "Public Python CLI Surface", "scheduler-health"),
+    ],
 )
-def test_generate_cli_docs_documents_all_subcommands(subcommand: str) -> None:
-    """Verify render_cli_reference includes every litestar queues subcommand."""
+def test_generate_cli_docs_documents_all_subcommands(category_heading: str, next_heading: str, subcommand: str) -> None:
+    """Verify render_cli_reference places every litestar queues subcommand in its declared category."""
     rendered = render_cli_reference()
     assert f"`litestar queues {subcommand}`" in rendered
+    section = rendered.split(f"## {category_heading}", maxsplit=1)[1].split(f"## {next_heading}", maxsplit=1)[0]
+    assert f"### `litestar queues {subcommand}`" in section
+
+
+def test_generate_cli_docs_has_no_uncategorized_commands_and_exports_list_command() -> None:
+    """Verify render_cli_reference has no Additional Commands fallback and lists list_command."""
+    rendered = render_cli_reference()
+    assert "## Additional Commands" not in rendered
+    assert "- list_command" in rendered
 
 
 def test_generate_cli_docs_check_mode(tmp_path: Path) -> None:

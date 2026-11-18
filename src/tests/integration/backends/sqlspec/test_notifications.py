@@ -29,7 +29,7 @@ from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend, SQLSpecWorkerWakeupConfig
 from litestar_queues.backends.sqlspec.backend import _adapter_wakeup_transport
 from litestar_queues.backends.sqlspec.config import DEFAULT_WAKEUP_CHANNEL
-from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
+from litestar_queues.backends.sqlspec.extension import DEFAULT_MIGRATION_MODE, QUEUE_EXTENSION_NAME
 from litestar_queues.exceptions import QueueConfigurationError
 from tests.integration.backends.sqlspec.conftest import StubAsyncEventChannel
 
@@ -259,13 +259,13 @@ def _txeventq_queue(oracle_service: "OracleService") -> "Iterator[None]":
 
 @pytest.fixture(scope="session")
 def oracle_aq_privileges(request: "FixtureRequest") -> "None":
-    """Grant the app user Oracle AQ privileges when the 23ai fixture is available."""
+    """Grant the app user Oracle AQ privileges when the 26ai fixture is available."""
 
     pytest.importorskip("oracledb")
     try:
-        oracle_service = cast("OracleService", request.getfixturevalue("oracle_23ai_service"))
+        oracle_service = cast("OracleService", request.getfixturevalue("oracle_26ai_service"))
     except pytest.FixtureLookupError:
-        pytest.skip("Oracle 23ai fixture is not available")
+        pytest.skip("Oracle 26ai fixture is not available")
     system_password = getattr(oracle_service, "system_password", None)
     if system_password is None:
         pytest.skip("Oracle service fixture does not expose a system password for AQ grants")
@@ -566,7 +566,11 @@ def test_queue_plugin_registers_events_migration_for_capable_adapter() -> "None"
             initialize_schedules=False,
         )
     ).on_cli_init(Group())
-    assert (capable_config.extension_config or {}).get("events") == {"backend": "notify_queue"}
+    assert (capable_config.extension_config or {}).get("events") == {
+        "backend": "notify_queue",
+        "migrations_path": "sqlspec.extensions.events:migrations",
+        "migration_mode": DEFAULT_MIGRATION_MODE,
+    }
     assert "events" in capable_config.migration_config.get("include_extensions", [])
 
     polling_config = AiosqliteConfig(connection_config={"database": ":memory:"})
@@ -727,7 +731,7 @@ async def test_sqlspec_backend_oracle_event_transports_wake_waiters(
     """Oracle AQ and TxEventQ wake ``wait_for_wakeups`` through SQLSpec events."""
 
     pytest.importorskip("oracledb")
-    oracle_service = cast("OracleService", request.getfixturevalue("oracle_23ai_service"))
+    oracle_service = cast("OracleService", request.getfixturevalue("oracle_26ai_service"))
     request.getfixturevalue("oracle_aq_privileges")
 
     queue_manager = _classic_aq_queue(oracle_service) if event_backend == "aq" else _txeventq_queue(oracle_service)
@@ -1099,7 +1103,8 @@ async def test_sqlspec_postgres_config_subclass_durable_wakeup(
     await backend.open()
     try:
         await backend.create_schema()
-        assert backend.capabilities.wakeup_backend == "poll_queue"
+        assert backend.capabilities.wakeup_backend == "notify_queue"
+        assert backend.capabilities.wakeups_durable is True
         waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=5))
         task = await backend.enqueue("tasks.subclass", kwargs={"payload": {"source": config_name}})
         assert await waiter is True

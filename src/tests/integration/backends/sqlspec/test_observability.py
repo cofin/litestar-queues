@@ -43,7 +43,9 @@ class RecordingSpanManager:
         sql: "str",
         operation: "str",
         connection_info: "dict[str, Any]",
-        correlation_id: "str | None",
+        storage_backend: "str | None" = None,
+        correlation_id: "str | None" = None,
+        db_system: "str | None" = None,
     ) -> "tuple[str, dict[str, Any]]":
         attributes = {
             "db.operation": operation,
@@ -52,6 +54,10 @@ class RecordingSpanManager:
             "sqlspec.driver": driver,
             **connection_info,
         }
+        if db_system is not None:
+            attributes["db.system"] = db_system
+        if storage_backend is not None:
+            attributes["sqlspec.storage_backend"] = storage_backend
         if bind_key is not None:
             attributes["sqlspec.bind_key"] = bind_key
         if correlation_id is not None:
