@@ -54,7 +54,7 @@ Source = "https://github.com/cofin/litestar-queues"
 queues = "litestar_queues._cli:queues_group"
 
 [project.optional-dependencies]
-advanced-alchemy = ["advanced-alchemy>=1.13.0b1", "sqlalchemy>=2.0.41"]
+advanced-alchemy = ["advanced-alchemy>=1.13.0b2", "sqlalchemy>=2.0.41"]
 cloud-tasks = ["google-cloud-tasks>=2.23.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
 kafka = ["aiokafka>=0.14.0"]
@@ -64,7 +64,7 @@ sqs = ["aiobotocore>=3.8.0"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
 redis = ["redis>=8.1.0"]
-sqlspec = ["sqlspec>=0.72.0"]
+sqlspec = ["sqlspec>=0.72.1"]
 valkey = ["valkey>=6.0.0"]
 
 ######################
@@ -150,7 +150,7 @@ version = "{current_version}"
 #####################
 [dependency-groups]
 benchmark-backends = [
-  "advanced-alchemy>=1.13.0b1",
+  "advanced-alchemy>=1.13.0b2",
   "asyncpg>=0.30.0",
   "google-cloud-run>=0.10.0",
   "google-cloud-tasks>=2.23.0",
@@ -161,7 +161,7 @@ benchmark-backends = [
   "psycopg[binary,pool]>=3.2.0",
   "redis>=8.1.0",
   "sqlalchemy>=2.0.41",
-  "sqlspec[performance]>=0.72.0",
+  "sqlspec[performance]>=0.72.1",
   "valkey>=6.0.0",
 ]
 # ARQ runs in its pinned isolated script because its Redis <6 requirement conflicts.
@@ -184,7 +184,7 @@ examples = ["aiosqlite>=0.20.0", "jinja2>=3.1.0", "litestar-vite>=0.26.1"]
 lint = ["mypy", "pyright", "ruff", "slotscheck"]
 test-adapters = [
   "adbc-driver-sqlite",
-  "advanced-alchemy>=1.13.0b1",
+  "advanced-alchemy>=1.13.0b2",
   "google-cloud-spanner>=3.47.0",
   "hiredis",
   "libvalkey>=4.0.1",
@@ -199,7 +199,7 @@ test-adapters = [
   "pytest-databases>=0.20.0b3",
   "redis>=8.1.0",
   "sqlalchemy>=2.0.41",
-  "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql,mssql-python]>=0.72.0",
+  "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql,mssql-python]>=0.72.1",
   "valkey>=6.0.0",
 ]
 test-core = [

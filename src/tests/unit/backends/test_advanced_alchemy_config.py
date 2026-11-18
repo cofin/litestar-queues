@@ -9,6 +9,10 @@ from tests.helpers._timing import wait_until
 pytest.importorskip("advanced_alchemy")
 pytest.importorskip("sqlalchemy")
 
+from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
+
+from litestar_queues.backends.advanced_alchemy import QueueEventHistoryModel, QueueTaskModel
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
@@ -350,3 +354,44 @@ async def test_psycopg_listener_cancel_during_wait_retains_read_then_close_clean
 
 def _has_pending(listener: "Any") -> "bool":
     return bool(listener._pending_read.has_pending)
+
+
+@pytest.mark.parametrize(("server_version", "expected_ddl"), [((19, 0, 0), "BLOB"), ((23, 26, 0), "JSON")])
+@pytest.mark.parametrize(
+    ("model_cls", "attr_name", "value"),
+    [
+        (QueueTaskModel, "args_json", []),
+        (QueueTaskModel, "args_json", [1, "two", {"nested": True}]),
+        (QueueTaskModel, "kwargs_json", {"account_id": "acct-1"}),
+        (QueueTaskModel, "metadata_json", {"interruptions": 1}),
+        (QueueTaskModel, "result_json", "ok"),
+        (QueueTaskModel, "result_json", "123"),
+        (QueueTaskModel, "result_json", 42),
+        (QueueTaskModel, "result_json", None),
+        (QueueEventHistoryModel, "detail_json", {"nested": {"value": [1, 2]}}),
+    ],
+)
+def test_advanced_alchemy_oracle_jsonb_round_trips_without_double_encoding(
+    server_version: "tuple[int, int, int]", expected_ddl: "str", model_cls: "Any", attr_name: "str", value: "Any"
+) -> "None":
+    """Queue models bind and decode JsonB values in a single pass across Oracle 19c and 26ai."""
+    pytest.importorskip("oracledb")
+    config = SQLAlchemyAsyncConfig(
+        connection_string="oracle+oracledb_async://scott:tiger@localhost:1521/?service_name=freepdb1"
+    )
+    dialect = config.get_engine().dialect
+    dialect.server_version_info = server_version
+
+    column_type = getattr(model_cls, attr_name).property.columns[0].type
+    assert column_type.compile(dialect=dialect) == expected_ddl
+
+    dialect_impl = column_type.dialect_impl(dialect)
+    bind_processor = dialect_impl.bind_processor(dialect)
+    result_processor = dialect_impl.result_processor(dialect, None)
+    assert bind_processor is not None
+    assert result_processor is not None
+
+    bound = bind_processor(value)
+    decoded = result_processor(bound)
+    assert decoded == value
+    assert type(decoded) is type(value)

@@ -12,7 +12,7 @@ Notable changes to Litestar Queues are recorded here. Entries focus on user-visi
 
 **Changed:**
 
-- **Breaking:** `SQLSpecBackendConfig.migration_mode` and `configure_queue_migration_extension` default to `"reconcile"` and require `sqlspec>=0.72.0`; the `advanced-alchemy` optional extra requires `advanced-alchemy>=1.13.0b1` and `sqlalchemy>=2.0.41` with SQLAlchemy 2.1 support ([#192](https://github.com/cofin/litestar-queues/issues/192), [#193](https://github.com/cofin/litestar-queues/pull/193)). See [SQLSpec Backend](backends/sqlspec.md) and [Advanced Alchemy Backend](backends/advanced-alchemy.md).
+- **Breaking:** `SQLSpecBackendConfig.migration_mode` and `configure_queue_migration_extension` default to `"reconcile"` and require `sqlspec>=0.72.1`; the `advanced-alchemy` optional extra requires `advanced-alchemy>=1.13.0b2` and `sqlalchemy>=2.0.41` with SQLAlchemy 2.1 support ([#192](https://github.com/cofin/litestar-queues/issues/192), [#193](https://github.com/cofin/litestar-queues/pull/193)). See [SQLSpec Backend](backends/sqlspec.md) and [Advanced Alchemy Backend](backends/advanced-alchemy.md).
 
 **Fixed:**
 
