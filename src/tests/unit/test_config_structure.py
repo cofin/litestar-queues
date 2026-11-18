@@ -278,7 +278,8 @@ def test_queue_config_rejects_resolver_and_provider_together() -> "None":
     assert QueueConfig(task_dependency_provider=provider).task_dependency_resolver is None
 
 
-_SQLSPEC_MIN_FLOOR_RE = re.compile(r"^sqlspec(?:\[[^\]]+\])?\s*>=\s*(\d+)\.(\d+)(?:\.\d+)?\b")
+_SQLSPEC_MIN_FLOOR_RE = re.compile(r"^sqlspec(?:\[[^\]]+\])?\s*>=\s*(\d+)\.(\d+)(?:\.(\d+))?\b")
+_ADVANCED_ALCHEMY_MIN_FLOOR_RE = re.compile(r"^advanced-alchemy(?:\[[^\]]+\])?\s*>=\s*(\d+)\.(\d+)\.(\d+)(?:b(\d+))?\b")
 
 
 @pytest.mark.parametrize(
@@ -286,7 +287,7 @@ _SQLSPEC_MIN_FLOOR_RE = re.compile(r"^sqlspec(?:\[[^\]]+\])?\s*>=\s*(\d+)\.(\d+)
     [("optional", "sqlspec"), ("group", "benchmark-backends"), ("group", "test-adapters")],
 )
 def test_pyproject_declares_minimum_sqlspec_reconcile_floor(section_kind: str, section_key: str) -> None:
-    """Every sqlspec dependency declaration requires at least 0.72 for schema reconciliation."""
+    """Every sqlspec dependency declaration requires at least 0.72.2."""
     pyproject_path = Path(__file__).resolve().parents[3] / "pyproject.toml"
     manifest = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
     entries: list[object] = (
@@ -297,12 +298,42 @@ def test_pyproject_declares_minimum_sqlspec_reconcile_floor(section_kind: str, s
     sqlspec_specs = [entry for entry in entries if isinstance(entry, str) and entry.startswith("sqlspec")]
     assert sqlspec_specs
     floors = [
-        (int(match.group(1)), int(match.group(2)))
+        (int(match.group(1)), int(match.group(2)), int(match.group(3) or 0))
         for spec in sqlspec_specs
         if (match := _SQLSPEC_MIN_FLOOR_RE.match(spec)) is not None
     ]
     assert len(floors) == len(sqlspec_specs)
-    assert all(floor >= (0, 72) for floor in floors)
+    assert all(floor >= (0, 72, 2) for floor in floors)
+
+
+@pytest.mark.parametrize(
+    ("section_kind", "section_key"),
+    [("optional", "advanced-alchemy"), ("group", "benchmark-backends"), ("group", "test-adapters")],
+)
+def test_pyproject_declares_minimum_advanced_alchemy_floor(section_kind: str, section_key: str) -> None:
+    """Every advanced-alchemy dependency declaration requires at least 1.13.0b2."""
+    pyproject_path = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    manifest = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    entries: list[object] = (
+        manifest["project"]["optional-dependencies"][section_key]
+        if section_kind == "optional"
+        else manifest["dependency-groups"][section_key]
+    )
+    aa_specs = [entry for entry in entries if isinstance(entry, str) and entry.startswith("advanced-alchemy")]
+    assert aa_specs
+    floors = [
+        (
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3)),
+            0 if match.group(4) is not None else 1,
+            int(match.group(4) or 0),
+        )
+        for spec in aa_specs
+        if (match := _ADVANCED_ALCHEMY_MIN_FLOOR_RE.match(spec)) is not None
+    ]
+    assert len(floors) == len(aa_specs)
+    assert all(floor >= (1, 13, 0, 0, 2) for floor in floors)
 
 
 @pytest.mark.parametrize("excluded_path", ["/.agents", "/AGENTS.md", "/uv.toml"])

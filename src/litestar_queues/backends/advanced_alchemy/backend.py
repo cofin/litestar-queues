@@ -700,7 +700,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
             async with self._session() as session, session.begin():
                 session.add(model(name=name, token=token, expires_at=new_expiry))
                 await session.flush()
-        except SQLAlchemyIntegrityError:
+        except (AdvancedAlchemyIntegrityError, SQLAlchemyIntegrityError):
             return False
         return True
 
