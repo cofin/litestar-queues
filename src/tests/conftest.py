@@ -1,6 +1,7 @@
 import logging
 
 import pytest
+from _pytest import nodes as pytest_nodes
 from litestar import Litestar
 from litestar.logging.config import LoggingConfig
 
@@ -15,6 +16,18 @@ def pytest_configure(config: "pytest.Config") -> "None":
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(LoggingConfig, "configure", lambda _self: logging.getLogger)
     config.add_cleanup(monkeypatch.undo)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(items: "list[pytest.Item]") -> "None":
+    """Propagate xdist ``_nodeid`` loadgroup suffixes onto pytest 9.2+ ``Node._id``."""
+    coerce_node_id = getattr(pytest_nodes, "coerce_node_id", None)
+    if coerce_node_id is None:
+        return
+    for item in items:
+        legacy_nodeid = getattr(item, "_nodeid", None)
+        if isinstance(legacy_nodeid, str) and legacy_nodeid != item.nodeid:
+            item._id = coerce_node_id(legacy_nodeid)
 
 
 @pytest.fixture

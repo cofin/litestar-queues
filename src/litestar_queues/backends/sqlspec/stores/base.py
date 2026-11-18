@@ -1416,12 +1416,13 @@ RETURNING {target}.{id_col} AS id
     def serialize_json(self, canonical: "str", value: "Any") -> "Any":
         """Serialize a JSON value for a canonical queue column.
 
-        Native JSON columns (driver registers a JSON codec — e.g.
-        SQLSpec's asyncpg/psycopg JSONB codec, psqlpy's PyJSON type,
-        mysql JSON, oracle JSON) accept dictionaries directly. Arrays and
+        Native JSON columns on helper-serialized drivers (such as psycopg
+        JSONB and MySQL JSON) accept dictionaries directly, while arrays and
         primitives are pre-encoded so adapters do not confuse Python lists
-        with SQL arrays and so scalar strings remain valid JSON text. TEXT
-        columns receive the JSON-encoded string from ``_serialize_json``.
+        with SQL arrays and so scalar strings remain valid JSON text. Driver
+        stores with binary JSON codecs (such as ``asyncpg`` and
+        ``cockroach_asyncpg``) override this method. TEXT columns receive the
+        JSON-encoded string from ``_serialize_json``.
 
         Returns:
             The value shaped for the configured adapter.

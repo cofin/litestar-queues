@@ -41,7 +41,8 @@ def pytest_configure(config: "pytest.Config") -> "None":
     """Dynamically register pytest-databases container plugins and tune SDK shutdown polling."""
     for plugin in _DATABASE_PLUGINS:
         if not config.pluginmanager.has_plugin(plugin):
-            config.pluginmanager.import_plugin(plugin)
+            with suppress(ImportError, pytest.UsageError):
+                config.pluginmanager.import_plugin(plugin)
     for module_name in _SPANNER_SESSION_MANAGER_MODULES:
         with suppress(ImportError):
             module = import_module(module_name)

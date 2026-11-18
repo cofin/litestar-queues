@@ -15,10 +15,13 @@ from unittest.mock import MagicMock
 
 import pytest
 from sqlspec.adapters.asyncpg import AsyncpgConfig
+from sqlspec.adapters.asyncpg import core as asyncpg_core
 from sqlspec.adapters.asyncpg.events.store import AsyncpgEventQueueStore
 from sqlspec.adapters.cockroach_asyncpg import CockroachAsyncpgConfig
+from sqlspec.adapters.cockroach_asyncpg import core as cockroach_asyncpg_core
 from sqlspec.exceptions import MigrationError
 from sqlspec.migrations.schema import SchemaTarget
+from sqlspec.utils.serializers import from_json, to_json
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.backend import _adapter_wakeup_transport, _events_queue_store, _match_store_class
@@ -1599,3 +1602,64 @@ def test_dialect_manage_schema_false_suppresses_drop_statements(adapter: "str", 
     assert store.companion_indexes() == ()
     assert store.create_statements() == []
     assert store.drop_statements() == []
+
+
+@pytest.mark.parametrize(
+    ("config_cls", "core_mod"), [(AsyncpgConfig, asyncpg_core), (CockroachAsyncpgConfig, cockroach_asyncpg_core)]
+)
+@pytest.mark.parametrize(
+    ("canonical", "value", "expected"),
+    [
+        ("args_json", [], []),
+        ("args_json", (1, "two", {"nested": True}), [1, "two", {"nested": True}]),
+        ("kwargs_json", {}, {}),
+        ("kwargs_json", {"account_id": "acct-1"}, {"account_id": "acct-1"}),
+        ("metadata_json", {"interruptions": 2}, {"interruptions": 2}),
+        ("result_json", None, None),
+        ("result_json", "123", "123"),
+        ("result_json", "ok", "ok"),
+        ("result_json", 42, 42),
+        ("result_json", True, True),
+    ],
+)
+def test_asyncpg_family_stores_round_trip_jsonb_without_double_encoding(
+    config_cls: "Any", core_mod: "Any", canonical: "str", value: "Any", expected: "Any"
+) -> "None":
+    """AsyncPG and CockroachAsyncPG stores emit UTF-8 JSON bytes that round-trip through SQLSpec JSONB codecs."""
+    config = config_cls(connection_config={"dsn": "postgresql://localhost/test"})
+    store = create_queue_store(config)
+    serialized = store.serialize_json(canonical, value)
+
+    assert isinstance(serialized, bytes)
+    wire_bytes = core_mod._JsonbEncoder(to_json)(serialized)
+    assert wire_bytes.startswith(b"\x01")
+    driver_decoded = core_mod._JsonbDecoder(from_json)(wire_bytes)
+    result = store.deserialize_json(canonical, driver_decoded)
+
+    assert result == expected
+    assert type(result) is type(expected)
+
+
+@pytest.mark.parametrize("config_cls", [AsyncpgConfig, CockroachAsyncpgConfig])
+@pytest.mark.parametrize(
+    ("canonical", "value", "expected"),
+    [
+        ("args_json", (1, "two"), [1, "two"]),
+        ("kwargs_json", {"account_id": "acct-1"}, {"account_id": "acct-1"}),
+        ("result_json", "123", "123"),
+        ("result_json", None, None),
+    ],
+)
+def test_asyncpg_family_stores_support_disabled_json_codecs(
+    config_cls: "Any", canonical: "str", value: "Any", expected: "Any"
+) -> "None":
+    """When enable_json_codecs is disabled, AsyncPG-family stores serialize to str and decode raw JSON text."""
+    config = config_cls(
+        connection_config={"dsn": "postgresql://localhost/test"}, driver_features={"enable_json_codecs": False}
+    )
+    store = create_queue_store(config)
+    serialized = store.serialize_json(canonical, value)
+
+    assert isinstance(serialized, str)
+    assert store.deserialize_json(canonical, serialized) == expected
+    assert store.deserialize_json(canonical, memoryview(serialized.encode("utf-8"))) == expected

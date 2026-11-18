@@ -2,6 +2,23 @@
 
 Notable changes to Litestar Queues are recorded here. Entries focus on user-visible behavior, public API changes, and operational fixes.
 
+## 0.15.0 - 2026-11-18
+
+**Added:**
+
+- Paginated multi-status task listing across all storage backends via `TaskListPage`, `QueueService.list_tasks`, `BaseQueueBackend.list_tasks`, and `litestar queues list` (`list_command`, exported from `litestar_queues.cli`), supporting multi-status, queue, task-name, and key filters with deterministic `(created_at DESC, id DESC)` ordering, companion `created` and `list` secondary indexes across relational and ephemeral stores, and live-hash `HMGET` filtering on `RedisQueueBackend` and `ValkeyQueueBackend` (`RedisQueueBackend.rebuild_maintenance_indexes()` repairs secondary indexes offline for pre-0.15.0 deployments) ([#191](https://github.com/cofin/litestar-queues/issues/191), [#193](https://github.com/cofin/litestar-queues/pull/193)). See [Task Results](learn/results.md) and [CLI Reference](reference/cli.md).
+- Additive SQLSpec schema reconciliation via `SQLSpecBackendConfig.migration_mode`, `SQLSpecMigrationMode`, `configure_queue_migration_extension(..., migration_mode=...)`, and `litestar_queues.backends.sqlspec.migrations.reconcile` (`reconcile`, `downgrade`, `down`), reconciling queue, event-history, maintenance, and forever-reservation tables, companion indexes, Postgres autovacuum options, and CockroachDB `terminal_ttl` storage options on `sqlspec>=0.72.0` (`sqlspec db upgrade` and `SQLSpecQueueBackend.create_schema()`) while retaining `migration_mode="versioned"` for `0001_create_queue_tasks` ([#192](https://github.com/cofin/litestar-queues/issues/192), [#193](https://github.com/cofin/litestar-queues/pull/193)). See [SQLSpec Backend](backends/sqlspec.md).
+- Upfront SQLSpec pool validation via `validate_queue_sqlspec_config`, rejecting read-replica (`is_replica=True`) and `driver_features["tenant_strategy"]` configurations across `SQLSpecBackendConfig`, `SQLSpecQueueBackend`, and schema reconciliation ([#192](https://github.com/cofin/litestar-queues/issues/192), [#193](https://github.com/cofin/litestar-queues/pull/193)).
+
+**Changed:**
+
+- **Breaking:** `SQLSpecBackendConfig.migration_mode` and `configure_queue_migration_extension` default to `"reconcile"` and require `sqlspec>=0.72.0`; the `advanced-alchemy` optional extra requires `advanced-alchemy>=1.13.0b1` and `sqlalchemy>=2.0.41` with SQLAlchemy 2.1 support ([#192](https://github.com/cofin/litestar-queues/issues/192), [#193](https://github.com/cofin/litestar-queues/pull/193)). See [SQLSpec Backend](backends/sqlspec.md) and [Advanced Alchemy Backend](backends/advanced-alchemy.md).
+
+**Fixed:**
+
+- Truncated Oracle index names in `OracledbQueueStore` append a deterministic SHA-256 suffix within Oracle's 30-character identifier limit so long table names do not collide across schema-scoped index namespaces ([#193](https://github.com/cofin/litestar-queues/pull/193)).
+- `AsyncpgQueueStore` and `CockroachAsyncpgQueueStore` serialize native `JSONB` payloads as UTF-8 JSON bytes for `sqlspec>=0.72.0` binary JSON codecs without double-encoding array, scalar string, or `null` values ([#193](https://github.com/cofin/litestar-queues/pull/193)).
+
 ## 0.14.0 - 2026-11-03
 
 **Added:**
